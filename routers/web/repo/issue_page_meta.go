@@ -34,9 +34,9 @@ type issueSidebarAssigneesData struct {
 }
 
 type issueSidebarProjectsData struct {
-	SelectedProjectIDs []int64 // TODO: support multiple projects in the future
+	SelectedProjectIDs string
 
-	// the "selected" fields are only valid when len(SelectedProjectIDs)==1
+	// the "selected" fields are only valid when there's a single project selected
 	SelectedProjectColumns []*project_model.Column
 	SelectedProjectColumn  *project_model.Column
 
@@ -169,32 +169,44 @@ func (d *IssuePageMetaData) retrieveAssigneesData(ctx *context.Context) {
 }
 
 func (d *IssuePageMetaData) retrieveProjectData(ctx *context.Context) {
-	if d.Issue == nil || d.Issue.Project == nil {
+	if d.Issue == nil || len(d.Issue.Projects) == 0 {
 		return
 	}
-	d.ProjectsData.SelectedProjectIDs = []int64{d.Issue.Project.ID}
-	columns, err := d.Issue.Project.GetColumns(ctx)
-	if err != nil {
-		ctx.ServerError("GetProjectColumns", err)
-		return
+	ids := make([]string, 0, len(d.Issue.Projects))
+	for _, p := range d.Issue.Projects {
+		ids = append(ids, strconv.FormatInt(p.ID, 10))
 	}
-	d.ProjectsData.SelectedProjectColumns = columns
-	columnID, err := d.Issue.ProjectColumnID(ctx)
-	if err != nil {
-		ctx.ServerError("ProjectColumnID", err)
-		return
-	}
-	for _, col := range columns {
-		if col.ID == columnID {
-			d.ProjectsData.SelectedProjectColumn = col
-			break
+	d.ProjectsData.SelectedProjectIDs = strings.Join(ids, ",")
+
+	// For column selection, we only support it when there's a single project
+	if len(d.Issue.Projects) == 1 {
+		columns, err := d.Issue.Projects[0].GetColumns(ctx)
+		if err != nil {
+			ctx.ServerError("GetProjectColumns", err)
+			return
+		}
+		d.ProjectsData.SelectedProjectColumns = columns
+		columnID, err := d.Issue.ProjectColumnID(ctx)
+		if err != nil {
+			ctx.ServerError("ProjectColumnID", err)
+			return
+		}
+		for _, col := range columns {
+			if col.ID == columnID {
+				d.ProjectsData.SelectedProjectColumn = col
+				break
+			}
 		}
 	}
 }
 
 func (d *IssuePageMetaData) retrieveProjectsDataForIssueWriter(ctx *context.Context) {
-	if d.Issue != nil && d.Issue.Project != nil {
-		d.ProjectsData.SelectedProjectIDs = []int64{d.Issue.Project.ID}
+	if d.Issue != nil && len(d.Issue.Projects) > 0 {
+		ids := make([]string, 0, len(d.Issue.Projects))
+		for _, a := range d.Issue.Projects {
+			ids = append(ids, strconv.FormatInt(a.ID, 10))
+		}
+		d.ProjectsData.SelectedProjectIDs = strings.Join(ids, ",")
 	}
 	d.ProjectsData.OpenProjects, d.ProjectsData.ClosedProjects = retrieveProjectsInternal(ctx, ctx.Repo.Repository)
 }
