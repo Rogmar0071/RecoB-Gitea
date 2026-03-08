@@ -147,9 +147,19 @@ func setupGiteaMockServer(t *testing.T) *httptest.Server {
 		{"git", "-C", workDir, "tag", "v2-rc1"},
 		{"git", "-C", workDir, "checkout", "-b", "6543-patch-1"},
 		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "patch"},
+		{"git", "-C", workDir, "push", "origin", "master", "6543-patch-1", "V1", "v2-rc1"},
+	} {
+		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
+		require.NoError(t, err, "command %v failed: %s", cmd, out)
+	}
+
+	// Create a fork bare repo with the add-xkcd-2199 branch for the fork PR head
+	forkDir := t.TempDir()
+	for _, cmd := range [][]string{
+		{"git", "clone", "--bare", repoDir, forkDir},
 		{"git", "-C", workDir, "checkout", "-b", "add-xkcd-2199", "master"},
 		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "xkcd"},
-		{"git", "-C", workDir, "push", "origin", "master", "6543-patch-1", "add-xkcd-2199", "V1", "v2-rc1"},
+		{"git", "-C", workDir, "push", forkDir, "add-xkcd-2199"},
 	} {
 		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
 		require.NoError(t, err, "command %v failed: %s", cmd, out)
@@ -177,19 +187,22 @@ func setupGiteaMockServer(t *testing.T) *httptest.Server {
 				mux.HandleFunc("/gitea/test_repo.wiki.git/", func(w http.ResponseWriter, _ *http.Request) {
 					http.Error(w, "wiki not found", http.StatusNotFound)
 				})
-				mux.HandleFunc("/gitea/test_repo.git/", func(w http.ResponseWriter, r *http.Request) {
-					pathInfo := strings.TrimPrefix(r.URL.Path, "/gitea/test_repo.git")
-					handler := &cgi.Handler{
-						Path: httpBackend,
-						Dir:  repoDir,
-						Env: []string{
-							"GIT_PROJECT_ROOT=" + filepath.Dir(repoDir),
-							"GIT_HTTP_EXPORT_ALL=1",
-						},
+				gitHandler := func(dir, prefix string) http.HandlerFunc {
+					return func(w http.ResponseWriter, r *http.Request) {
+						handler := &cgi.Handler{
+							Path: httpBackend,
+							Dir:  dir,
+							Env: []string{
+								"GIT_PROJECT_ROOT=" + filepath.Dir(dir),
+								"GIT_HTTP_EXPORT_ALL=1",
+							},
+						}
+						r.URL.Path = "/" + filepath.Base(dir) + strings.TrimPrefix(r.URL.Path, prefix)
+						handler.ServeHTTP(w, r)
 					}
-					r.URL.Path = "/" + filepath.Base(repoDir) + pathInfo
-					handler.ServeHTTP(w, r)
-				})
+				}
+				mux.HandleFunc("/gitea/test_repo.git/", gitHandler(repoDir, "/gitea/test_repo.git"))
+				mux.HandleFunc("/6543-forks/test_repo.git/", gitHandler(forkDir, "/6543-forks/test_repo.git"))
 			},
 			Replacements: map[string]string{
 				"{{MASTER_SHA}}": masterSHA,
@@ -328,13 +341,13 @@ func Test_MigrateFromGiteaToGitea(t *testing.T) {
 
 	branches, _, err := gitRepo.GetBranchNames(0, 0)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"6543-patch-1", "master", "add-xkcd-2199", "6543/add-xkcd-2199"}, branches) // last branch comes from the pull request
+	assert.ElementsMatch(t, []string{"6543-patch-1", "master", "6543-forks/add-xkcd-2199"}, branches) // last branch comes from the pull request
 
 	branchNames, err := git_model.FindBranchNames(t.Context(), git_model.FindBranchOptions{
 		RepoID: migratedRepo.ID,
 	})
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"6543-patch-1", "master", "add-xkcd-2199", "6543/add-xkcd-2199"}, branchNames)
+	assert.ElementsMatch(t, []string{"6543-patch-1", "master", "6543-forks/add-xkcd-2199"}, branchNames)
 
 	tags, _, err := gitRepo.GetTagInfos(0, 0)
 	require.NoError(t, err)
