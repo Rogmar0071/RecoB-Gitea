@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -199,8 +200,10 @@ done
 	require.NoError(t, err)
 	httpBackend := filepath.Join(strings.TrimSpace(string(execPathBytes)), "git-http-backend")
 
+	_, callerFile, _, _ := runtime.Caller(0)
+	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/Test_MigrateFromGiteaToGitea")
 	return unittest.NewMockWebServer(t, "https://gitea.com",
-		"_mock_data/Test_MigrateFromGiteaToGitea", liveMode,
+		fixtureDir, liveMode,
 		unittest.MockServerOptions{
 			ExtraRoutes: func(mux *http.ServeMux) {
 				mux.HandleFunc("/gitea/test_repo.wiki.git/", func(w http.ResponseWriter, _ *http.Request) {
