@@ -158,12 +158,18 @@ func Test_MigrateFromGiteaToGitea(t *testing.T) {
 			&issues_model.Issue{RepoID: migratedRepo.ID},
 			unittest.Cond("is_pull = ?", false),
 		)
-		assert.Greater(t, issueCount, 0)
+		assert.Equal(t, 2, issueCount)
 
 		pullCount := unittest.GetCount(t,
 			&issues_model.Issue{RepoID: migratedRepo.ID},
 			unittest.Cond("is_pull = ?", true),
 		)
-		assert.Greater(t, pullCount, 0)
+		assert.Equal(t, 3, pullCount)
+
+		milestoneCount := unittest.GetCount(t, &issues_model.Milestone{RepoID: migratedRepo.ID})
+		assert.Equal(t, 3, milestoneCount)
+
+		labelCount := unittest.GetCount(t, &issues_model.Label{RepoID: migratedRepo.ID})
+		assert.Equal(t, 2, labelCount)
 	})
 }
