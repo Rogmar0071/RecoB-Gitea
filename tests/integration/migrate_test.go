@@ -131,49 +131,68 @@ func setupGiteaMockServer(t *testing.T) *httptest.Server {
 	giteaToken := os.Getenv("GITEA_TOKEN")
 	liveMode := giteaToken != ""
 
-	// Create a bare git repo with the expected branches and tags
+	// fast-import data creates deterministic commits (fixed author/committer/timestamps),
+	// so the resulting SHAs are always the same across runs.
+	fastImportData := `commit refs/heads/master
+mark :1
+author Test <test@test.com> 1000000000 +0000
+committer Test <test@test.com> 1000000000 +0000
+data 8
+initial
+
+commit refs/heads/master
+mark :2
+author Test <test@test.com> 1000000001 +0000
+committer Test <test@test.com> 1000000001 +0000
+data 7
+second
+
+from :1
+
+commit refs/heads/6543-patch-1
+mark :3
+author Test <test@test.com> 1000000002 +0000
+committer Test <test@test.com> 1000000002 +0000
+data 6
+patch
+
+from :2
+
+reset refs/tags/V1
+from :1
+
+reset refs/tags/v2-rc1
+from :2
+
+done
+`
+	// Fork adds one extra branch for the PR head (from master = 873987e)
+	forkExtraData := `commit refs/heads/add-xkcd-2199
+author Test <test@test.com> 1000000003 +0000
+committer Test <test@test.com> 1000000003 +0000
+data 5
+xkcd
+
+from 873987ea3e99c206bb0841266845098ee74d4ce9
+
+done
+`
+	fastImport := func(dir, data string) {
+		cmd := exec.Command("git", "-C", dir, "fast-import", "--date-format=raw", "--done")
+		cmd.Stdin = strings.NewReader(data)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "fast-import failed: %s", out)
+	}
+
 	repoDir := t.TempDir()
 	out, err := exec.Command("git", "init", "--bare", repoDir).CombinedOutput()
 	require.NoError(t, err, "git init failed: %s", out)
+	fastImport(repoDir, fastImportData)
 
-	// Create a work tree to populate the bare repo
-	workDir := t.TempDir()
-	for _, cmd := range [][]string{
-		{"git", "clone", repoDir, workDir},
-		{"git", "-C", workDir, "checkout", "-b", "master"},
-		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"},
-		{"git", "-C", workDir, "tag", "V1"},
-		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "second"},
-		{"git", "-C", workDir, "tag", "v2-rc1"},
-		{"git", "-C", workDir, "checkout", "-b", "6543-patch-1"},
-		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "patch"},
-		{"git", "-C", workDir, "push", "origin", "master", "6543-patch-1", "V1", "v2-rc1"},
-	} {
-		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
-		require.NoError(t, err, "command %v failed: %s", cmd, out)
-	}
-
-	// Create a fork bare repo with the add-xkcd-2199 branch for the fork PR head
 	forkDir := t.TempDir()
-	for _, cmd := range [][]string{
-		{"git", "clone", "--bare", repoDir, forkDir},
-		{"git", "-C", workDir, "checkout", "-b", "add-xkcd-2199", "master"},
-		{"git", "-C", workDir, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "xkcd"},
-		{"git", "-C", workDir, "push", forkDir, "add-xkcd-2199"},
-	} {
-		out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
-		require.NoError(t, err, "command %v failed: %s", cmd, out)
-	}
-
-	// Get branch SHAs for fixture replacements
-	getSHA := func(ref string) string {
-		out, err := exec.Command("git", "-C", workDir, "rev-parse", ref).Output()
-		require.NoError(t, err)
-		return strings.TrimSpace(string(out))
-	}
-	masterSHA := getSHA("master")
-	patchSHA := getSHA("6543-patch-1")
-	headSHA := getSHA("add-xkcd-2199")
+	out, err = exec.Command("git", "clone", "--bare", repoDir, forkDir).CombinedOutput()
+	require.NoError(t, err, "git clone failed: %s", out)
+	fastImport(forkDir, forkExtraData)
 
 	// Find git-http-backend
 	execPathBytes, err := exec.Command("git", "--exec-path").Output()
@@ -203,11 +222,6 @@ func setupGiteaMockServer(t *testing.T) *httptest.Server {
 				}
 				mux.HandleFunc("/gitea/test_repo.git/", gitHandler(repoDir, "/gitea/test_repo.git"))
 				mux.HandleFunc("/6543-forks/test_repo.git/", gitHandler(forkDir, "/6543-forks/test_repo.git"))
-			},
-			Replacements: map[string]string{
-				"{{MASTER_SHA}}": masterSHA,
-				"{{PATCH_SHA}}":  patchSHA,
-				"{{HEAD_SHA}}":   headSHA,
 			},
 		},
 	)

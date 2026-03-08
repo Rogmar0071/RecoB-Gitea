@@ -26,9 +26,6 @@ type MockServerOptions struct {
 	// ExtraRoutes registers additional handlers on the server's ServeMux before the
 	// default fixture handler. More specific patterns take precedence over the catch-all.
 	ExtraRoutes func(mux *http.ServeMux)
-	// Replacements defines additional string replacements to apply to fixture content
-	// beyond the automatic liveServerBaseURL → mockServerBaseURL replacement.
-	Replacements map[string]string
 }
 
 // NewMockWebServer creates a mock HTTP server that either records responses from a live
@@ -108,9 +105,6 @@ func NewMockWebServer(t *testing.T, liveServerBaseURL, testDataDir string, liveM
 		require.NoError(t, err, "missing fixture: %s", fixturePath)
 
 		stringFixture := strings.ReplaceAll(string(fixture), liveServerBaseURL, mockServerBaseURL)
-		for old, new := range options.Replacements {
-			stringFixture = strings.ReplaceAll(stringFixture, old, new)
-		}
 
 		headerSection, responseBody, _ := strings.Cut(stringFixture, "\n\n")
 		for line := range strings.SplitSeq(headerSection, "\n") {
