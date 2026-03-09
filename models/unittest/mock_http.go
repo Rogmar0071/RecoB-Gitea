@@ -26,6 +26,10 @@ type MockServerOptions struct {
 	// ExtraRoutes registers additional handlers on the server's ServeMux before the
 	// default fixture handler. More specific patterns take precedence over the catch-all.
 	ExtraRoutes func(mux *http.ServeMux)
+	// LivePathTrimPrefix removes a path prefix before forwarding to the live server.
+	// This is needed when the client adds a prefix (e.g. go-github adds "/api/v3")
+	// that is not part of the live server's URL structure.
+	LivePathTrimPrefix string
 }
 
 // NewMockWebServer creates a mock HTTP server that either records responses from a live
@@ -64,7 +68,7 @@ func NewMockWebServer(t *testing.T, liveServerBaseURL, testDataDir string, liveM
 		if liveMode {
 			require.NoError(t, os.MkdirAll(testDataDir, 0o755))
 
-			liveURL := fmt.Sprintf("%s%s", liveServerBaseURL, path)
+			liveURL := fmt.Sprintf("%s%s", liveServerBaseURL, strings.TrimPrefix(path, options.LivePathTrimPrefix))
 			request, err := http.NewRequest(r.Method, liveURL, r.Body)
 			require.NoError(t, err, "constructing an HTTP request to %s failed", liveURL)
 			for headerName, headerValues := range r.Header {

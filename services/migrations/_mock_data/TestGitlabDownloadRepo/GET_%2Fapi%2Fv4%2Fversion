@@ -1,0 +1,21 @@
+Cache-Control: no-cache
+Cf-Cache-Status: MISS
+Content-Length: 30
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json
+Gitlab-Lb: haproxy-main-48-lb-gprd
+Gitlab-Sv: api-gke-us-east1-d
+Ratelimit-Limit: 500
+Ratelimit-Name: throttle_unauthenticated_api
+Ratelimit-Observed: 1
+Ratelimit-Remaining: 499
+Ratelimit-Reset: 1773085980
+Referrer-Policy: strict-origin-when-cross-origin
+Strict-Transport-Security: max-age=31536000
+Vary: Origin, Accept-Encoding
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Gitlab-Meta: {"correlation_id":"9d9c9e4ada407817-VIE","version":"1"}
+X-Runtime: 0.016121
+
+{"message":"401 Unauthorized"}
