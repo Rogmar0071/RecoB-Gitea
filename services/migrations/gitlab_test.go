@@ -28,12 +28,6 @@ func TestGitlabDownloadRepo(t *testing.T) {
 
 	_, callerFile, _, _ := runtime.Caller(0)
 	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/TestGitlabDownloadRepo")
-	if !liveMode {
-		if _, err := os.Stat(fixtureDir); os.IsNotExist(err) {
-			t.Skip("Skipping test: no GITLAB_READ_TOKEN and no fixture data. Set GITLAB_READ_TOKEN to record fixtures.")
-		}
-	}
-
 	mockServer := unittest.NewMockWebServer(t, "https://gitlab.com", fixtureDir, liveMode)
 
 	ctx := t.Context()

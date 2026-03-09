@@ -22,12 +22,6 @@ func TestGogsDownloadRepo(t *testing.T) {
 
 	_, callerFile, _, _ := runtime.Caller(0)
 	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/TestGogsDownloadRepo")
-	if !liveMode {
-		if _, err := os.Stat(fixtureDir); os.IsNotExist(err) {
-			t.Skip("Skipping test: no GOGS_READ_TOKEN and no fixture data. Set GOGS_READ_TOKEN to record fixtures.")
-		}
-	}
-
 	mockServer := unittest.NewMockWebServer(t, "https://try.gogs.io", fixtureDir, liveMode)
 
 	ctx := t.Context()

@@ -22,12 +22,6 @@ func TestOneDevDownloadRepo(t *testing.T) {
 
 	_, callerFile, _, _ := runtime.Caller(0)
 	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/TestOneDevDownloadRepo")
-	if !liveMode {
-		if _, err := os.Stat(fixtureDir); os.IsNotExist(err) {
-			t.Skip("Skipping test: no ONEDEV_LIVE and no fixture data. Set ONEDEV_LIVE=1 to record fixtures.")
-		}
-	}
-
 	mockServer := unittest.NewMockWebServer(t, "https://code.onedev.io", fixtureDir, liveMode)
 
 	u, _ := url.Parse(mockServer.URL)

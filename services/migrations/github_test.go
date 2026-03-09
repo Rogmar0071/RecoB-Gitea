@@ -24,12 +24,6 @@ func TestGitHubDownloadRepo(t *testing.T) {
 
 	_, callerFile, _, _ := runtime.Caller(0)
 	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/TestGitHubDownloadRepo")
-	if !liveMode {
-		if _, err := os.Stat(fixtureDir); os.IsNotExist(err) {
-			t.Skip("Skipping test: no GITHUB_READ_TOKEN and no fixture data. Set GITHUB_READ_TOKEN to record fixtures.")
-		}
-	}
-
 	mockServer := unittest.NewMockWebServer(t, "https://api.github.com", fixtureDir, liveMode, unittest.MockServerOptions{
 		LivePathTrimPrefix: "/api/v3",
 	})

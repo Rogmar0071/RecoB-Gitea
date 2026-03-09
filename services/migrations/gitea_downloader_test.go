@@ -24,12 +24,6 @@ func TestGiteaDownloadRepo(t *testing.T) {
 
 	_, callerFile, _, _ := runtime.Caller(0)
 	fixtureDir := filepath.Join(filepath.Dir(callerFile), "_mock_data/TestGiteaDownloadRepo")
-	if !liveMode {
-		if _, err := os.Stat(fixtureDir); os.IsNotExist(err) {
-			t.Skip("Skipping test: no GITEA_TEST_OFFICIAL_SITE_TOKEN and no fixture data. Set GITEA_TEST_OFFICIAL_SITE_TOKEN to record fixtures.")
-		}
-	}
-
 	mockServer := unittest.NewMockWebServer(t, "https://gitea.com", fixtureDir, liveMode)
 
 	ctx := t.Context()
