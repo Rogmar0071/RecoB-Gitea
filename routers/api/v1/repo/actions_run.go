@@ -19,6 +19,7 @@ import (
 	"code.gitea.io/gitea/routers/common"
 	actions_service "code.gitea.io/gitea/services/actions"
 	"code.gitea.io/gitea/services/context"
+	"code.gitea.io/gitea/services/convert"
 	notify_service "code.gitea.io/gitea/services/notify"
 
 	"xorm.io/builder"
@@ -111,7 +112,7 @@ func CancelWorkflowRun(ctx *context.APIContext) {
 	//   "404":
 	//     "$ref": "#/responses/notFound"
 
-	runID, _, err := getRunID(ctx)
+	runID, run, err := getRunID(ctx)
 	if err != nil {
 		if errors.Is(err, util.ErrNotExist) {
 			ctx.APIError(404, "Run not found")
@@ -172,7 +173,12 @@ func CancelWorkflowRun(ctx *context.APIContext) {
 		notify_service.WorkflowRunStatusUpdate(ctx, job.Run.Repo, job.Run.TriggerUser, job.Run)
 	}
 
-	ctx.Status(200)
+	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	ctx.JSON(http.StatusOK, convertedRun)
 }
 
 func ApproveWorkflowRun(ctx *context.APIContext) {
@@ -265,7 +271,12 @@ func ApproveWorkflowRun(ctx *context.APIContext) {
 		notify_service.WorkflowJobStatusUpdate(ctx, job.Run.Repo, job.Run.TriggerUser, job, nil)
 	}
 
-	ctx.Status(200)
+	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	ctx.JSON(http.StatusOK, convertedRun)
 }
 
 // Helper functions
