@@ -5623,7 +5623,7 @@
         "tags": [
           "repository"
         ],
-        "summary": "Rerun a specific job and its dependent jobs",
+        "summary": "Reruns a specific workflow job in a run",
         "operationId": "rerunWorkflowJob",
         "parameters": [
           {
@@ -5642,7 +5642,7 @@
           },
           {
             "type": "integer",
-            "description": "run ID",
+            "description": "id of the run",
             "name": "run",
             "in": "path",
             "required": true
@@ -5656,9 +5656,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "success"
-          },
           "201": {
             "$ref": "#/responses/WorkflowJob"
           },
@@ -5843,7 +5840,7 @@
         "tags": [
           "repository"
         ],
-        "summary": "Rerun a workflow run and its jobs",
+        "summary": "Reruns an entire workflow run",
         "operationId": "rerunWorkflowRun",
         "parameters": [
           {
@@ -5862,16 +5859,13 @@
           },
           {
             "type": "integer",
-            "description": "run ID",
+            "description": "id of the run",
             "name": "run",
             "in": "path",
             "required": true
           }
         ],
         "responses": {
-          "200": {
-            "description": "success"
-          },
           "201": {
             "$ref": "#/responses/WorkflowRun"
           },
