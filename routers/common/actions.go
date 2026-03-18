@@ -122,6 +122,9 @@ func DownloadActionsRunJobLogs(ctx *context.Base, ctxRepo *repo_model.Repository
 
 	reader, err := actions.OpenLogs(ctx, task.LogInStorage, task.LogFilename)
 	if err != nil {
+		if strings.Contains(err.Error(), "no such file") || strings.Contains(err.Error(), "does not exist") {
+			return util.NewNotExistErrorf("logs not found")
+		}
 		return fmt.Errorf("OpenLogs: %w", err)
 	}
 	defer reader.Close()
