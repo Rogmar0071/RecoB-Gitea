@@ -53,3 +53,17 @@ type swaggerResponseRunDetails struct {
 	// in:body
 	Body api.RunDetails `json:"body"`
 }
+
+// WorkflowRunRerunRequest
+// swagger:model WorkflowRunRerunRequest
+type swaggerWorkflowRunRerunRequest struct {
+	// Enable debug logging for the re-run
+	EnableDebugLogging bool `json:"enable_debug_logging"`
+}
+
+// WorkflowRunLogsRequest
+// swagger:model WorkflowRunLogsRequest
+type swaggerWorkflowRunLogsRequest struct {
+	// Log cursors for incremental log streaming
+	LogCursors []map[string]any `json:"logCursors"`
+}
