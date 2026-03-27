@@ -186,7 +186,7 @@ type ProtectBranchForm struct {
 	BlockOnRejectedReviews        bool
 	BlockOnOfficialReviewRequests bool
 	BlockOnOutdatedBranch         bool
-	DismissApprovalsOnRequest     bool
+	DismissApprovalsOnReRequest   bool
 	DismissStaleApprovals         bool
 	IgnoreStaleApprovals          bool
 	RequireSignedCommits          bool
