@@ -168,6 +168,12 @@ type ViewJob struct {
 	CanRerun bool     `json:"canRerun"`
 	Duration string   `json:"duration"`
 	Needs    []string `json:"needs,omitempty"`
+
+	IsReusableCall       bool   `json:"isReusableCall"`
+	ReusableWorkflowUses string `json:"reusableWorkflowUses,omitempty"`
+	ParentCallJobID      int64  `json:"parentCallJobID"`
+	RootCallJobID        int64  `json:"rootCallJobID"`
+	CallDepth            int    `json:"callDepth"`
 }
 
 type ViewCommit struct {
@@ -283,6 +289,12 @@ func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse,
 			CanRerun: resp.State.Run.CanRerun,
 			Duration: v.Duration().String(),
 			Needs:    v.Needs,
+
+			IsReusableCall:       v.IsReusableCall,
+			ReusableWorkflowUses: v.ReusableWorkflowUses,
+			ParentCallJobID:      v.ParentCallJobID,
+			RootCallJobID:        v.RootCallJobID,
+			CallDepth:            v.CallDepth,
 		})
 	}
 
@@ -473,14 +485,7 @@ func Rerun(ctx *context_module.Context) {
 		return
 	}
 
-	var jobsToRerun []*actions_model.ActionRunJob
-	if currentJob != nil {
-		jobsToRerun = actions_service.GetAllRerunJobs(currentJob, jobs)
-	} else {
-		jobsToRerun = jobs
-	}
-
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobsToRerun); err != nil {
+	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs, currentJob); err != nil {
 		ctx.ServerError("RerunWorkflowRunJobs", err)
 		return
 	}
@@ -498,8 +503,8 @@ func RerunFailed(ctx *context_module.Context) {
 		return
 	}
 
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetFailedRerunJobs(jobs)); err != nil {
-		ctx.ServerError("RerunWorkflowRunJobs", err)
+	if err := actions_service.RerunFailedWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
+		ctx.ServerError("RerunFailedWorkflowRunJobs", err)
 		return
 	}
 

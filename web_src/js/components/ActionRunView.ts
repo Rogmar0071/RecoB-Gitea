@@ -87,6 +87,35 @@ export function createLogLineMessage(line: LogLine, cmd: LogLineCommand | null) 
   return logMsg;
 }
 
+export function buildJobsByParentCallJobID(jobs: ActionsJob[]): Map<number, ActionsJob[]> {
+  const childrenByParent = new Map<number, ActionsJob[]>();
+  for (const job of jobs) {
+    const parentID = job.parentCallJobID || 0;
+    const list = childrenByParent.get(parentID);
+    if (list) list.push(job);
+    else childrenByParent.set(parentID, [job]);
+  }
+  return childrenByParent;
+}
+
+export function collectCallerChildJobs(jobs: ActionsJob[], callerJobID: number): ActionsJob[] {
+  if (!callerJobID) return [];
+
+  const childrenByParent = buildJobsByParentCallJobID(jobs);
+  return childrenByParent.get(callerJobID) || [];
+}
+
+export function aggregateSubsetStatus(jobs: ActionsJob[]): ActionsRunStatus {
+  if (jobs.some((job) => job.status === 'failure')) return 'failure';
+  if (jobs.some((job) => job.status === 'running')) return 'running';
+  if (jobs.some((job) => job.status === 'blocked')) return 'blocked';
+  if (jobs.some((job) => job.status === 'waiting')) return 'waiting';
+  if (jobs.some((job) => job.status === 'cancelled')) return 'cancelled';
+  if (jobs.some((job) => job.status === 'success')) return 'success';
+  if (jobs.some((job) => job.status === 'skipped')) return 'skipped';
+  return 'unknown';
+}
+
 export function createEmptyActionsRun(): ActionsRun {
   return {
     link: '',
