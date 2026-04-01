@@ -3779,6 +3779,8 @@
   "actions.variables.update.success": "The variable has been edited.",
   "actions.logs.always_auto_scroll": "Always auto scroll logs",
   "actions.logs.always_expand_running": "Always expand running logs",
+  "actions.attempt": "Attempt",
+  "actions.previous_logs": "Previous logs",
   "actions.general": "General",
   "actions.general.enable_actions": "Enable Actions",
   "actions.general.collaborative_owners_management": "Collaborative Owners Management",

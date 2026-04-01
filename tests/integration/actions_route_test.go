@@ -5,6 +5,7 @@ package integration
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestActionsRoute(t *testing.T) {
@@ -96,5 +98,74 @@ jobs:
 		user2Session.MakeRequest(t, req, http.StatusNotFound)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, repo1.Name, run2.ID, job1.ID))
 		user2Session.MakeRequest(t, req, http.StatusNotFound)
+	})
+}
+
+func TestActionsRouteJobAttemptLogs(t *testing.T) {
+	onGiteaRun(t, func(t *testing.T, u *url.URL) {
+		user2 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+		session := loginUser(t, user2.Name)
+		token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeWriteUser)
+
+		repo := createActionsTestRepo(t, token, "actions-attempt-logs", false)
+		runner := newMockRunner()
+		runner.registerAsRepoRunner(t, user2.Name, repo.Name, "mock-runner", []string{"ubuntu-latest"}, false)
+
+		workflowTreePath := ".gitea/workflows/test.yml"
+		workflowContent := `name: test
+on:
+  push:
+    paths:
+      - '.gitea/workflows/test.yml'
+jobs:
+  job1:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo job1
+`
+
+		opts := getWorkflowCreateFileOptions(user2, repo.DefaultBranch, "create "+workflowTreePath, workflowContent)
+		createWorkflowFile(t, token, user2.Name, repo.Name, workflowTreePath, opts)
+
+		task1 := runner.fetchTask(t)
+		_, job, run := getTaskAndJobAndRunByTaskID(t, task1.Id)
+		runner.execTask(t, task1, &mockTaskOutcome{
+			result:  runnerv1.Result_RESULT_SUCCESS,
+			logRows: []*runnerv1.LogRow{{Content: "attempt-1"}},
+		})
+
+		req := NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, repo.Name, run.ID, job.ID))
+		session.MakeRequest(t, req, http.StatusOK)
+
+		task2 := runner.fetchTask(t)
+		runner.execTask(t, task2, &mockTaskOutcome{
+			result:  runnerv1.Result_RESULT_SUCCESS,
+			logRows: []*runnerv1.LogRow{{Content: "attempt-2"}},
+		})
+		runner.fetchNoTask(t)
+
+		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d", user2.Name, repo.Name, run.ID, job.ID))
+		resp := session.MakeRequest(t, req, http.StatusOK)
+		var viewResp actions_web.ViewResponse
+		DecodeJSON(t, resp, &viewResp)
+		assert.Equal(t, int64(2), viewResp.State.CurrentJob.Attempt)
+		require.Len(t, viewResp.State.CurrentJob.AvailableAttempts, 1)
+		assert.Equal(t, int64(1), viewResp.State.CurrentJob.AvailableAttempts[0].Attempt)
+
+		req = NewRequest(t, "GET", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/logs?attempt=1", user2.Name, repo.Name, run.ID, job.ID))
+		resp = session.MakeRequest(t, req, http.StatusOK)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "attempt-1")
+		assert.NotContains(t, string(body), "attempt-2")
+
+		req = NewRequest(t, "GET", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/logs", user2.Name, repo.Name, run.ID, job.ID))
+		resp = session.MakeRequest(t, req, http.StatusOK)
+		body, err = io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "attempt-2")
+
+		req = NewRequest(t, "GET", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/logs?attempt=99", user2.Name, repo.Name, run.ID, job.ID))
+		session.MakeRequest(t, req, http.StatusNotFound)
 	})
 }

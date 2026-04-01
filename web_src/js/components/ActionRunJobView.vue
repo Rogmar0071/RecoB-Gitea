@@ -11,6 +11,7 @@ import {localUserSettings} from '../modules/user-settings.ts';
 import type {ActionsArtifact, ActionsRun, ActionsRunStatus} from '../modules/gitea-actions.ts';
 import {
   type ActionRunViewStore,
+  type ActionsAttempt,
   createLogLineMessage,
   type LogLine,
   type LogLineCommand,
@@ -52,7 +53,9 @@ type LocaleStorageOptions = {
 type CurrentJob = {
   title: string;
   detail: string;
+  attempt: number;
   steps: Array<Step>;
+  availableAttempts: Array<ActionsAttempt>;
 };
 
 type JobData = {
@@ -111,7 +114,9 @@ const optionAlwaysExpandRunning = ref(expandRunning);
 const currentJob = ref<CurrentJob>({
   title: '',
   detail: '',
+  attempt: 0,
   steps: [] as Array<Step>,
+  availableAttempts: [],
 });
 const stepsContainer = ref<HTMLElement | null>(null);
 const jobStepLogs = ref<Array<StepContainerElement | undefined>>([]);
@@ -412,6 +417,24 @@ async function hashChangeListener() {
         {{ currentJob.detail }}
       </p>
     </div>
+    <div v-if="currentJob.availableAttempts.length > 0" class="ui dropdown jump button">
+      <SvgIcon name="octicon-download" :size="18" class="tw-mr-1"/>
+      <span class="text">{{ locale.previousLogs }}</span>
+      <SvgIcon name="octicon-triangle-down" :size="18" class="dropdown icon"/>
+      <div class="menu transition action-job-menu">
+        <template v-for="attempt in currentJob.availableAttempts" :key="attempt.attempt">
+          <a v-if="!attempt.logExpired" class="item flex-text-inline" :href="`${run.link}/jobs/${jobId}/logs?attempt=${attempt.attempt}`" download>
+            <ActionRunStatus :locale-status="locale.status[attempt.status]" :status="attempt.status"/>
+            {{ locale.attempt }} {{ attempt.attempt }}
+          </a>
+          <span v-else class="item disabled flex-text-inline">
+            <ActionRunStatus :locale-status="locale.status[attempt.status]" :status="attempt.status"/>
+            {{ locale.attempt }} {{ attempt.attempt }}
+            <span class="ui mini label">{{ locale.artifactExpired }}</span>
+          </span>
+        </template>
+      </div>
+    </div>
     <div class="job-info-header-right">
       <div class="ui top right pointing dropdown custom jump item" @click.stop="menuVisible = !menuVisible" @keyup.enter="menuVisible = !menuVisible">
         <button class="ui button tw-px-3">
@@ -542,6 +565,10 @@ async function hashChangeListener() {
 
 .job-info-header-left {
   flex: 1;
+}
+
+.job-info-header .ui.dropdown.button {
+  padding-left: 8px;
 }
 
 .job-step-container {

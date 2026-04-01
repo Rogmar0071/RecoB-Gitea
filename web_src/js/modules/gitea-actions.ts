@@ -43,6 +43,7 @@ export type ActionsJob = {
   name: string;
   status: ActionsRunStatus;
   canRerun: boolean;
+  attempt: number;
   needs?: string[];
   duration: string;
 };

@@ -151,9 +151,11 @@ type ViewResponse struct {
 			TriggerEvent string `json:"triggerEvent"` // e.g. pull_request, push, schedule
 		} `json:"run"`
 		CurrentJob struct {
-			Title  string         `json:"title"`
-			Detail string         `json:"detail"`
-			Steps  []*ViewJobStep `json:"steps"`
+			Title             string         `json:"title"`
+			Detail            string         `json:"detail"`
+			Attempt           int64          `json:"attempt"`
+			Steps             []*ViewJobStep `json:"steps"`
+			AvailableAttempts []*ViewAttempt `json:"availableAttempts"`
 		} `json:"currentJob"`
 	} `json:"state"`
 	Logs struct {
@@ -167,6 +169,7 @@ type ViewJob struct {
 	Name     string   `json:"name"`
 	Status   string   `json:"status"`
 	CanRerun bool     `json:"canRerun"`
+	Attempt  int64    `json:"attempt"`
 	Duration string   `json:"duration"`
 	Needs    []string `json:"needs,omitempty"`
 }
@@ -193,6 +196,14 @@ type ViewJobStep struct {
 	Summary  string `json:"summary"`
 	Duration string `json:"duration"`
 	Status   string `json:"status"`
+}
+
+type ViewAttempt struct {
+	Attempt    int64  `json:"attempt"`
+	Status     string `json:"status"`
+	Started    int64  `json:"started"` // unix seconds
+	Stopped    int64  `json:"stopped"` // unix seconds
+	LogExpired bool   `json:"logExpired"`
 }
 
 type ViewStepLog struct {
@@ -283,6 +294,7 @@ func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse,
 			Name:     v.Name,
 			Status:   v.Status.String(),
 			CanRerun: resp.State.Run.CanRerun,
+			Attempt:  v.Attempt,
 			Duration: v.Duration().String(),
 			Needs:    v.Needs,
 		})
@@ -327,6 +339,26 @@ func fillViewRunResponseCurrentJob(ctx *context_module.Context, resp *ViewRespon
 		return
 	}
 
+	if current.Attempt > 1 {
+		allTasks, err := actions_model.GetTasksByJobID(ctx, current.ID)
+		if err != nil {
+			ctx.ServerError("actions_model.GetTasksByJobID", err)
+			return
+		}
+		for _, t := range allTasks {
+			if t.Attempt == current.Attempt {
+				continue
+			}
+			resp.State.CurrentJob.AvailableAttempts = append(resp.State.CurrentJob.AvailableAttempts, &ViewAttempt{
+				Attempt:    t.Attempt,
+				Status:     t.Status.String(),
+				Started:    t.Started.AsTime().Unix(),
+				Stopped:    t.Stopped.AsTime().Unix(),
+				LogExpired: t.LogExpired,
+			})
+		}
+	}
+
 	var task *actions_model.ActionTask
 	if current.TaskID > 0 {
 		var err error
@@ -344,6 +376,7 @@ func fillViewRunResponseCurrentJob(ctx *context_module.Context, resp *ViewRespon
 
 	resp.State.CurrentJob.Title = current.Name
 	resp.State.CurrentJob.Detail = current.Status.LocaleString(ctx.Locale)
+	resp.State.CurrentJob.Attempt = current.Attempt
 	if run.NeedApproval {
 		resp.State.CurrentJob.Detail = ctx.Locale.TrString("actions.need_approval_desc")
 	}
@@ -375,7 +408,7 @@ func convertToViewModel(ctx context.Context, locale translation.Locale, cursors 
 	}
 
 	for _, cursor := range cursors {
-		if !cursor.Expanded {
+		if !cursor.Expanded || cursor.Step < 0 || cursor.Step >= len(steps) {
 			continue
 		}
 
@@ -514,8 +547,13 @@ func Logs(ctx *context_module.Context) {
 		return
 	}
 	jobID := ctx.PathParamInt64("job")
+	attempt := ctx.FormInt64("attempt")
+	if attempt < 0 {
+		ctx.HTTPError(http.StatusBadRequest, "attempt")
+		return
+	}
 
-	if err := common.DownloadActionsRunJobLogsWithID(ctx.Base, ctx.Repo.Repository, run.ID, jobID); err != nil {
+	if err := common.DownloadActionsRunJobLogsWithID(ctx.Base, ctx.Repo.Repository, run.ID, jobID, attempt); err != nil {
 		ctx.NotFoundOrServerError("DownloadActionsRunJobLogsWithID", func(err error) bool {
 			return errors.Is(err, util.ErrNotExist)
 		}, err)

@@ -20,7 +20,7 @@ const props = defineProps<{
 
 const locale = props.locale;
 const store = createActionRunViewStore(props.actionsUrl, props.runId);
-const {currentRun: run , runArtifacts: artifacts} = toRefs(store.viewData);
+const {currentRun: run, runArtifacts: artifacts} = toRefs(store.viewData);
 
 function cancelRun() {
   POST(`${run.value.link}/cancel`);
@@ -108,6 +108,7 @@ async function deleteArtifact(name: string) {
                 <span class="job-brief-name tw-mx-2 gt-ellipsis">{{ job.name }}</span>
               </div>
               <span class="job-brief-item-right">
+                <span v-if="job.attempt > 1" class="job-brief-attempt" :data-tooltip-content="`${locale.attempt} ${job.attempt}`">×{{ job.attempt }}</span>
                 <SvgIcon name="octicon-sync" role="button" :data-tooltip-content="locale.rerun" class="job-brief-rerun tw-mx-2 link-action interact-fg" :data-url="`${run.link}/jobs/${job.id}/rerun`" v-if="job.canRerun"/>
                 <span class="step-summary-duration">{{ job.duration }}</span>
               </span>
@@ -300,6 +301,20 @@ async function deleteArtifact(name: string) {
 .job-brief-item .job-brief-item-left span {
   display: flex;
   align-items: center;
+}
+
+.job-brief-attempt {
+  margin-left: 0.5rem;
+  margin-right: 0.5rem;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+  border: 1px solid var(--color-secondary);
+  border-radius: 9999px;
+  color: var(--color-text-light-2);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
 }
 
 .job-brief-item .job-brief-item-left .job-brief-name {

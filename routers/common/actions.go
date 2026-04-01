@@ -15,7 +15,7 @@ import (
 	"code.gitea.io/gitea/services/context"
 )
 
-func DownloadActionsRunJobLogsWithID(ctx *context.Base, ctxRepo *repo_model.Repository, runID, jobID int64) error {
+func DownloadActionsRunJobLogsWithID(ctx *context.Base, ctxRepo *repo_model.Repository, runID, jobID, attempt int64) error {
 	job, err := actions_model.GetRunJobByRunAndID(ctx, runID, jobID)
 	if err != nil {
 		return err
@@ -23,25 +23,33 @@ func DownloadActionsRunJobLogsWithID(ctx *context.Base, ctxRepo *repo_model.Repo
 	if err := job.LoadRepo(ctx); err != nil {
 		return fmt.Errorf("LoadRepo: %w", err)
 	}
-	return DownloadActionsRunJobLogs(ctx, ctxRepo, job)
+	return DownloadActionsRunJobLogs(ctx, ctxRepo, job, attempt)
 }
 
-func DownloadActionsRunJobLogs(ctx *context.Base, ctxRepo *repo_model.Repository, curJob *actions_model.ActionRunJob) error {
+func DownloadActionsRunJobLogs(ctx *context.Base, ctxRepo *repo_model.Repository, curJob *actions_model.ActionRunJob, attempt int64) error {
 	if curJob.Repo.ID != ctxRepo.ID {
 		return util.NewNotExistErrorf("job not found")
-	}
-
-	if curJob.TaskID == 0 {
-		return util.NewNotExistErrorf("job not started")
 	}
 
 	if err := curJob.LoadRun(ctx); err != nil {
 		return fmt.Errorf("LoadRun: %w", err)
 	}
 
-	task, err := actions_model.GetTaskByID(ctx, curJob.TaskID)
-	if err != nil {
-		return fmt.Errorf("GetTaskByID: %w", err)
+	var task *actions_model.ActionTask
+	var err error
+	if attempt > 0 {
+		task, err = actions_model.GetTaskByJobAndAttempt(ctx, curJob.ID, attempt)
+		if err != nil {
+			return fmt.Errorf("GetTaskByJobAndAttempt: %w", err)
+		}
+	} else {
+		if curJob.TaskID == 0 {
+			return util.NewNotExistErrorf("job not started")
+		}
+		task, err = actions_model.GetTaskByID(ctx, curJob.TaskID)
+		if err != nil {
+			return fmt.Errorf("GetTaskByID: %w", err)
+		}
 	}
 
 	if task.LogExpired {

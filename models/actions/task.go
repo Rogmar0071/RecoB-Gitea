@@ -29,7 +29,7 @@ import (
 // ActionTask represents a distribution of job
 type ActionTask struct {
 	ID       int64
-	JobID    int64
+	JobID    int64             `xorm:"index"`
 	Job      *ActionRunJob     `xorm:"-"`
 	Steps    []*ActionTaskStep `xorm:"-"`
 	Attempt  int64
@@ -161,6 +161,30 @@ func GetTaskByID(ctx context.Context, id int64) (*ActionTask, error) {
 		return nil, fmt.Errorf("task with id %d: %w", id, util.ErrNotExist)
 	}
 
+	return &task, nil
+}
+
+// GetTasksByJobID returns lightweight task metadata for all attempts of a job,
+// ordered by attempt ascending. Only fields needed for the attempts list are selected
+// to avoid loading LogIndexes (LONGBLOB) on every request.
+func GetTasksByJobID(ctx context.Context, jobID int64) ([]*ActionTask, error) {
+	var tasks []*ActionTask
+	return tasks, db.GetEngine(ctx).
+		Cols("id", "job_id", "attempt", "status", "started", "stopped", "log_expired").
+		Where("job_id=?", jobID).
+		OrderBy("attempt ASC").
+		Find(&tasks)
+}
+
+// GetTaskByJobAndAttempt returns the task for a specific attempt of a job.
+func GetTaskByJobAndAttempt(ctx context.Context, jobID, attempt int64) (*ActionTask, error) {
+	var task ActionTask
+	has, err := db.GetEngine(ctx).Where("job_id=? AND attempt=?", jobID, attempt).Get(&task)
+	if err != nil {
+		return nil, err
+	} else if !has {
+		return nil, util.NewNotExistErrorf("task with job_id %d attempt %d", jobID, attempt)
+	}
 	return &task, nil
 }
 

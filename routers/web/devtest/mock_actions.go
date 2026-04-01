@@ -4,6 +4,7 @@
 package devtest
 
 import (
+	"fmt"
 	mathRand "math/rand/v2"
 	"net/http"
 	"slices"
@@ -30,6 +31,7 @@ func generateMockStepsLog(logCur actions.LogCursor, opts generateMockStepsLogOpt
 	mockedLogs = append(mockedLogs, "::group::test group for: step={step}, cursor={cursor}")
 	mockedLogs = append(mockedLogs, slices.Repeat([]string{"in group msg for: step={step}, cursor={cursor}"}, opts.groupRepeat)...)
 	mockedLogs = append(mockedLogs, "::endgroup::")
+	mockedLogs = append(mockedLogs, "::error::error message for: step={step}, cursor={cursor}")
 	mockedLogs = append(mockedLogs,
 		"message for: step={step}, cursor={cursor}",
 		"message for: step={step}, cursor={cursor}",
@@ -62,6 +64,17 @@ func MockActionsView(ctx *context.Context) {
 	ctx.Data["RunID"] = ctx.PathParamInt64("run")
 	ctx.Data["JobID"] = ctx.PathParamInt64("job")
 	ctx.HTML(http.StatusOK, "devtest/repo-action-view")
+}
+
+func MockActionsJobLogs(ctx *context.Context) {
+	runID := ctx.PathParamInt64("run")
+	jobID := ctx.PathParamInt64("job")
+	attempt := ctx.FormInt64("attempt")
+	if attempt <= 0 {
+		attempt = 3
+	}
+
+	ctx.PlainText(http.StatusOK, fmt.Sprintf("mock run=%d job=%d attempt=%d log line 1\nmock run=%d job=%d attempt=%d log line 2\n", runID, jobID, attempt, runID, jobID, attempt))
 }
 
 func MockActionsRunsJobs(ctx *context.Context) {
@@ -122,6 +135,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
 		Name:     "job 100",
 		Status:   actions_model.StatusRunning.String(),
 		CanRerun: true,
+		Attempt:  3,
 		Duration: "1h",
 	})
 	resp.State.Run.Jobs = append(resp.State.Run.Jobs, &actions.ViewJob{
@@ -130,6 +144,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
 		Name:     "job 101",
 		Status:   actions_model.StatusWaiting.String(),
 		CanRerun: false,
+		Attempt:  1,
 		Duration: "2h",
 		Needs:    []string{"job-100"},
 	})
@@ -139,6 +154,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
 		Name:     "ULTRA LOOOOOOOOOOOONG job name 102 that exceeds the limit",
 		Status:   actions_model.StatusFailure.String(),
 		CanRerun: false,
+		Attempt:  2,
 		Duration: "3h",
 		Needs:    []string{"job-100", "job-101"},
 	})
@@ -148,6 +164,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
 		Name:     "job 103",
 		Status:   actions_model.StatusCancelled.String(),
 		CanRerun: false,
+		Attempt:  1,
 		Duration: "2m",
 		Needs:    []string{"job-100"},
 	})
@@ -161,6 +178,7 @@ func MockActionsRunsJobs(ctx *context.Context) {
 				Name:     "job dup test " + strconv.Itoa(i),
 				Status:   actions_model.StatusSuccess.String(),
 				CanRerun: false,
+				Attempt:  1,
 				Duration: "2m",
 				Needs:    []string{"job-103", "job-101", "job-100"},
 			})
@@ -178,6 +196,16 @@ func fillViewRunResponseCurrentJob(ctx *context.Context, resp *actions.ViewRespo
 	}
 
 	req := web.GetForm(ctx).(*actions.ViewRequest)
+
+	if ctx.PathParamInt64("run") == 10 && jobID == 100 {
+		resp.State.CurrentJob.Attempt = 4
+		resp.State.CurrentJob.AvailableAttempts = []*actions.ViewAttempt{
+			{Attempt: 1, Status: actions_model.StatusFailure.String(), Started: time.Now().Add(-2 * time.Hour).Unix(), Stopped: time.Now().Add(-110 * time.Minute).Unix()},
+			{Attempt: 2, Status: actions_model.StatusCancelled.String(), Started: time.Now().Add(-90 * time.Minute).Unix(), Stopped: time.Now().Add(-80 * time.Minute).Unix()},
+			{Attempt: 3, Status: actions_model.StatusSuccess.String(), Started: time.Now().Add(-10 * time.Minute).Unix(), LogExpired: true},
+		}
+	}
+
 	var mockLogOptions []generateMockStepsLogOptions
 	resp.State.CurrentJob.Steps = append(resp.State.CurrentJob.Steps, &actions.ViewJobStep{
 		Summary:  "step 0 (mock slow)",

@@ -4938,6 +4938,12 @@
             "name": "job_id",
             "in": "path",
             "required": true
+          },
+          {
+            "type": "integer",
+            "description": "the attempt number of the job (0 or omit for latest)",
+            "name": "attempt",
+            "in": "query"
           }
         ],
         "responses": {

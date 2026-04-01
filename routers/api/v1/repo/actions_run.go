@@ -5,6 +5,7 @@ package repo
 
 import (
 	"errors"
+	"net/http"
 
 	actions_model "code.gitea.io/gitea/models/actions"
 	"code.gitea.io/gitea/modules/util"
@@ -34,6 +35,11 @@ func DownloadActionsRunJobLogs(ctx *context.APIContext) {
 	//   description: id of the job
 	//   type: integer
 	//   required: true
+	// - name: attempt
+	//   in: query
+	//   description: the attempt number of the job (0 or omit for latest)
+	//   type: integer
+	//   required: false
 	// responses:
 	//   "200":
 	//     description: output blob content
@@ -43,6 +49,11 @@ func DownloadActionsRunJobLogs(ctx *context.APIContext) {
 	//     "$ref": "#/responses/notFound"
 
 	jobID := ctx.PathParamInt64("job_id")
+	attempt := ctx.FormInt64("attempt")
+	if attempt < 0 {
+		ctx.APIError(http.StatusBadRequest, util.NewInvalidArgumentErrorf("attempt must be >= 0"))
+		return
+	}
 	curJob, err := actions_model.GetRunJobByRepoAndID(ctx, ctx.Repo.Repository.ID, jobID)
 	if err != nil {
 		if errors.Is(err, util.ErrNotExist) {
@@ -57,7 +68,7 @@ func DownloadActionsRunJobLogs(ctx *context.APIContext) {
 		return
 	}
 
-	err = common.DownloadActionsRunJobLogs(ctx.Base, ctx.Repo.Repository, curJob)
+	err = common.DownloadActionsRunJobLogs(ctx.Base, ctx.Repo.Repository, curJob, attempt)
 	if err != nil {
 		if errors.Is(err, util.ErrNotExist) {
 			ctx.APIErrorNotFound(err)
