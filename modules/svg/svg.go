@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 
@@ -76,6 +77,16 @@ func MockIcon(icon string) func() {
 			delete(svgIcons, icon)
 		}
 	}
+}
+
+// DiscoveredIconNames returns the sorted list of all discovered SVG icon names
+func DiscoveredIconNames() []string {
+	names := make([]string, 0, len(svgIcons))
+	for name := range svgIcons {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // RenderHTML renders icons - arguments icon name (string), size (int), class (string)

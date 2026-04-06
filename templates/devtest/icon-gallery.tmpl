@@ -1,0 +1,45 @@
+{{template "devtest/devtest-header"}}
+<div class="page-content devtest ui container">
+	<h1>Icon Gallery</h1>
+	<p>All <strong>{{.IconCount}}</strong> SVG icons available in templates.</p>
+	<p>
+		<input id="icon-search" type="text" placeholder="Filter icons..." class="ui input" style="width: 300px">
+		<label class="gt-checkbox tw-ml-4"><input id="icon-size-toggle" type="checkbox"> Large (24px)</label>
+	</p>
+
+	<script>
+		document.addEventListener('DOMContentLoaded', () => {
+			const search = document.getElementById('icon-search');
+			const sizeToggle = document.getElementById('icon-size-toggle');
+			search.addEventListener('input', () => {
+				const q = search.value.toLowerCase();
+				for (const card of document.querySelectorAll('.icon-card')) {
+					card.style.display = card.getAttribute('data-name').includes(q) ? '' : 'none';
+				}
+			});
+			sizeToggle.addEventListener('change', () => {
+				const size = sizeToggle.checked ? '24' : '16';
+				for (const icon of document.querySelectorAll('.icon-card svg')) {
+					icon.setAttribute('width', size);
+					icon.setAttribute('height', size);
+				}
+			});
+		});
+	</script>
+
+	{{range $prefix := .IconGroupOrder}}
+	{{$icons := index $.IconGroups $prefix}}
+	{{if $icons}}
+	<h2 id="group-{{$prefix}}">{{$prefix}} <span class="ui grey label">{{len $icons}}</span></h2>
+	<div class="tw-flex tw-flex-wrap tw-gap-2 tw-mb-4">
+		{{range $name := $icons}}
+		<div class="icon-card tw-flex tw-flex-col tw-items-center tw-gap-1 tw-p-2 tw-border tw-border-secondary tw-rounded" style="width: 120px" data-name="{{$name}}" title="{{$name}}">
+			<div class="tw-flex tw-items-center tw-justify-center" style="height: 32px">{{svg $name 16}}</div>
+			<code class="gt-ellipsis" style="max-width: 108px; font-size: 10px">{{$name}}</code>
+		</div>
+		{{end}}
+	</div>
+	{{end}}
+	{{end}}
+</div>
+{{template "devtest/devtest-footer"}}

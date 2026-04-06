@@ -18,6 +18,7 @@ import (
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/badge"
 	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/modules/svg"
 	"code.gitea.io/gitea/modules/templates"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/services/context"
@@ -180,6 +181,21 @@ func prepareMockDataRelativeTime(ctx *context.Context) {
 	ctx.Data["TimeFuture1y"] = now.Add(366 * 24 * time.Hour)
 }
 
+func prepareMockDataIconGallery(ctx *context.Context) {
+	allNames := svg.DiscoveredIconNames()
+	grouped := map[string][]string{}
+	for _, name := range allNames {
+		prefix := "other"
+		if before, _, ok := strings.Cut(name, "-"); ok {
+			prefix = before
+		}
+		grouped[prefix] = append(grouped[prefix], name)
+	}
+	ctx.Data["IconGroups"] = grouped
+	ctx.Data["IconGroupOrder"] = []string{"octicon", "gitea", "fontawesome", "material", "other"}
+	ctx.Data["IconCount"] = len(allNames)
+}
+
 func prepareMockData(ctx *context.Context) {
 	switch ctx.Req.URL.Path {
 	case "/devtest/gitea-ui":
@@ -190,6 +206,8 @@ func prepareMockData(ctx *context.Context) {
 		prepareMockDataBadgeActionsSvg(ctx)
 	case "/devtest/relative-time":
 		prepareMockDataRelativeTime(ctx)
+	case "/devtest/icon-gallery":
+		prepareMockDataIconGallery(ctx)
 	}
 }
 
