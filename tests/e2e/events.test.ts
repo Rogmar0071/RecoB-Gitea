@@ -19,7 +19,7 @@ test.describe('events', () => {
     await expect(badge).toBeHidden();
 
     // Create issue as another user — this generates a notification delivered via server push
-    await apiCreateIssue(request, owner, repoName, {title: 'events notification test', headers: apiUserHeaders(commenter)});
+    await apiCreateIssue(request, {owner, repo: repoName, title: 'events notification test', headers: apiUserHeaders(commenter)});
 
     // Wait for the notification badge to appear via server event
     await expect(badge).toBeVisible({timeout: 15000 * timeoutFactor});
@@ -36,7 +36,7 @@ test.describe('events', () => {
 
     // Create repo, issue, and start stopwatch before login
     await apiCreateRepo(request, {name, headers});
-    await apiCreateIssue(request, name, name, {title: 'events stopwatch test', headers});
+    await apiCreateIssue(request, {owner: name, repo: name, title: 'events stopwatch test', headers});
     await apiStartStopwatch(request, name, name, 1, {headers});
 
     // Login — page renders with the active stopwatch element
