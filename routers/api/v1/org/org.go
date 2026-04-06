@@ -28,10 +28,14 @@ import (
 
 func listUserOrgs(ctx *context.APIContext, u *user_model.User) {
 	listOptions := utils.GetListOptions(ctx)
+	includeVisibility := organization.DoerViewOtherVisibility(ctx.Doer, u)
+	if ctx.PublicOnly {
+		includeVisibility = api.VisibleTypePublic
+	}
 	opts := organization.FindOrgOptions{
 		ListOptions:       listOptions,
 		UserID:            u.ID,
-		IncludeVisibility: organization.DoerViewOtherVisibility(ctx.Doer, u),
+		IncludeVisibility: includeVisibility,
 	}
 	orgs, maxResults, err := db.FindAndCount[organization.Organization](ctx, opts)
 	if err != nil {
@@ -464,7 +468,7 @@ func ListOrgActivityFeeds(ctx *context.APIContext) {
 	//     "$ref": "#/responses/notFound"
 
 	includePrivate := false
-	if ctx.IsSigned {
+	if ctx.IsSigned && !ctx.PublicOnly {
 		if ctx.Doer.IsAdmin {
 			includePrivate = true
 		} else {
