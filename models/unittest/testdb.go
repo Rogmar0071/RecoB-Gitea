@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"code.gitea.io/gitea/models/db"
@@ -89,7 +88,7 @@ func mainTest(m *testing.M, testOptsArg ...*TestOptions) int {
 	setting.SSH.BuiltinServerUser = "builtinuser"
 	setting.SSH.Port = 3000
 	setting.SSH.Domain = "try.gitea.io"
-	setting.Database.Type = "sqlite3"
+	setting.Database.Type = "sqlite"
 	setting.Repository.DefaultBranch = "master" // many test code still assume that default branch is called "master"
 	repoRootPath, cleanup1, err := tempdir.OsTempDir("gitea-test").MkdirTempRandom("repos")
 	if err != nil {
@@ -165,13 +164,11 @@ type FixturesOptions struct {
 
 // CreateTestEngine creates a memory database and loads the fixture data from fixturesDir
 func CreateTestEngine(opts FixturesOptions) error {
-	x, err := xorm.NewEngine("sqlite3", "file::memory:?cache=shared&_txlock=immediate")
+	x, err := xorm.NewEngine("sqlite", "file::memory:?_txlock=immediate")
 	if err != nil {
-		if strings.Contains(err.Error(), "unknown driver") {
-			return fmt.Errorf("sqlite3 requires: -tags sqlite,sqlite_unlock_notify\n%w", err)
-		}
 		return err
 	}
+	x.SetMaxOpenConns(1)
 	x.SetMapper(names.GonicMapper{})
 	db.SetDefaultEngine(context.Background(), x)
 
