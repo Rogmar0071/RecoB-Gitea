@@ -388,6 +388,29 @@ func DeletePullReview(ctx *context.APIContext) {
 	ctx.Status(http.StatusNoContent)
 }
 
+// resolveInReplyTo resolves an in_reply_to comment ID to the review ID it belongs to.
+// On error, it writes the response to ctx; caller should check ctx.Written().
+func resolveInReplyTo(ctx *context.APIContext, commentID int64, pr *issues_model.PullRequest) int64 {
+	comment, err := issues_model.GetCommentByID(ctx, commentID)
+	if err != nil {
+		if issues_model.IsErrCommentNotExist(err) {
+			ctx.APIErrorNotFound()
+		} else {
+			ctx.APIErrorInternal(err)
+		}
+		return 0
+	}
+	if comment.IssueID != pr.IssueID {
+		ctx.APIErrorNotFound()
+		return 0
+	}
+	if comment.Type != issues_model.CommentTypeCode || comment.ReviewID == 0 {
+		ctx.APIError(http.StatusUnprocessableEntity, errors.New("comment is not a review comment"))
+		return 0
+	}
+	return comment.ReviewID
+}
+
 // CreatePullReview create a review to a pull request
 func CreatePullReview(ctx *context.APIContext) {
 	// swagger:operation POST /repos/{owner}/{repo}/pulls/{index}/reviews repository repoCreatePullReview
@@ -466,10 +489,24 @@ func CreatePullReview(ctx *context.APIContext) {
 	}
 
 	// create review comments
+	var replyReviewID int64
 	for _, c := range opts.Comments {
 		line := c.NewLineNum
 		if c.OldLineNum > 0 {
 			line = c.OldLineNum * -1
+		}
+
+		var commentReplyReviewID int64
+		if c.InReplyToID != 0 {
+			commentReplyReviewID = resolveInReplyTo(ctx, c.InReplyToID, pr)
+			if ctx.Written() {
+				return
+			}
+			if replyReviewID != 0 && commentReplyReviewID != replyReviewID {
+				ctx.APIError(http.StatusUnprocessableEntity, errors.New("replies must be to comments in the same review"))
+				return
+			}
+			replyReviewID = commentReplyReviewID
 		}
 
 		if _, err := pull_service.CreateCodeComment(ctx,
@@ -479,8 +516,8 @@ func CreatePullReview(ctx *context.APIContext) {
 			line,
 			c.Body,
 			c.Path,
-			true, // pending review
-			0,    // no reply
+			commentReplyReviewID == 0, // pending
+			commentReplyReviewID,      // reply
 			opts.CommitID,
 			nil,
 		); err != nil {
@@ -491,6 +528,10 @@ func CreatePullReview(ctx *context.APIContext) {
 
 	// create review and associate all pending review comments
 	review, _, err := pull_service.SubmitReview(ctx, ctx.Doer, ctx.Repo.GitRepo, pr.Issue, reviewType, opts.Body, opts.CommitID, nil)
+	// reply-only requests have no pending review, fall back to the reply's review
+	if issues_model.IsContentEmptyErr(err) && replyReviewID != 0 {
+		review, err = issues_model.GetReviewByID(ctx, replyReviewID)
+	}
 	if err != nil {
 		if errors.Is(err, pull_service.ErrSubmitReviewOnClosedPR) {
 			ctx.APIError(http.StatusUnprocessableEntity, err)
