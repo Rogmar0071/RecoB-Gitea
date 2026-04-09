@@ -12,6 +12,7 @@ import (
 	"code.gitea.io/gitea/models/db"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/modules/actions/jobparser"
+	"code.gitea.io/gitea/modules/base"
 	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/util"
 
@@ -157,6 +158,12 @@ func GetRunJobsByRunID(ctx context.Context, runID int64) (ActionJobList, error) 
 	if err := db.GetEngine(ctx).Where("run_id=?", runID).OrderBy("id").Find(&jobs); err != nil {
 		return nil, err
 	}
+	slices.SortStableFunc(jobs, func(a, b *ActionRunJob) int {
+		if cmp := base.NaturalSortCompare(a.JobID, b.JobID); cmp != 0 {
+			return cmp
+		}
+		return base.NaturalSortCompare(a.Name, b.Name)
+	})
 	return jobs, nil
 }
 
