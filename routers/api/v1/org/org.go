@@ -20,6 +20,7 @@ import (
 	"code.gitea.io/gitea/modules/graceful"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/optional"
+	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/modules/web"
@@ -347,6 +348,11 @@ func Rename(ctx *context.APIContext) {
 	//   "422":
 	//     "$ref": "#/responses/validationError"
 
+	if !ctx.Doer.IsAdmin && setting.IsOrgFeatureDisabled(setting.OrgFeatureDangerZone) {
+		ctx.APIError(http.StatusForbidden, "Organization danger zone actions are restricted to site administrators")
+		return
+	}
+
 	form := web.GetForm(ctx).(*api.RenameOrgOption)
 	orgUser := ctx.Org.Organization.AsUser()
 	if err := user_service.RenameUser(ctx, orgUser, form.NewName, ctx.Doer); err != nil {
@@ -387,6 +393,11 @@ func Edit(ctx *context.APIContext) {
 	//     "$ref": "#/responses/notFound"
 
 	form := web.GetForm(ctx).(*api.EditOrgOption)
+	visibility := optional.FromMapLookup(api.VisibilityModes, optional.FromPtr(form.Visibility).Value())
+	if visibility.Has() && visibility.Value() != ctx.Org.Organization.Visibility && (!ctx.Doer.IsAdmin && setting.IsOrgFeatureDisabled(setting.OrgFeatureDangerZone)) {
+		ctx.APIError(http.StatusForbidden, "Organization danger zone actions are restricted to site administrators")
+		return
+	}
 
 	if err := org.UpdateOrgEmailAddress(ctx, ctx.Org.Organization, form.Email); err != nil {
 		if errors.Is(err, util.ErrInvalidArgument) {
@@ -402,7 +413,7 @@ func Edit(ctx *context.APIContext) {
 		Description:               optional.FromPtr(form.Description),
 		Website:                   optional.FromPtr(form.Website),
 		Location:                  optional.FromPtr(form.Location),
-		Visibility:                optional.FromMapLookup(api.VisibilityModes, optional.FromPtr(form.Visibility).Value()),
+		Visibility:                visibility,
 		RepoAdminChangeTeamAccess: optional.FromPtr(form.RepoAdminChangeTeamAccess),
 	}
 	if err := user_service.UpdateUser(ctx, ctx.Org.Organization.AsUser(), opts); err != nil {
@@ -431,6 +442,11 @@ func Delete(ctx *context.APIContext) {
 	//     "$ref": "#/responses/empty"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
+
+	if setting.IsOrgFeatureDisabled(setting.OrgFeatureDangerZone) && !ctx.Doer.IsAdmin {
+		ctx.APIError(http.StatusForbidden, "Organization danger zone actions are restricted to site administrators")
+		return
+	}
 
 	if err := org.DeleteOrganization(ctx, ctx.Org.Organization, false); err != nil {
 		ctx.APIErrorInternal(err)
