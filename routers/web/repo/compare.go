@@ -209,6 +209,13 @@ func setMarkdownCompareContext(ctx *context.Context, before, head *git.Commit) {
 		if blob == nil {
 			return "", nil
 		}
+		// Guard against pathological inputs: diffmatchpatch on the full rendered
+		// HTML of very large markdown files is slow before its internal timeout
+		// trips. Skip the rich diff for oversized blobs and fall back to the
+		// source diff (the same bound as the rest of the compare view).
+		if setting.UI.MaxDisplayFileSize > 0 && blob.Size() > setting.UI.MaxDisplayFileSize {
+			return "", errRichDiffTooLarge
+		}
 		reader, err := blob.DataAsync()
 		if err != nil {
 			return "", err
@@ -240,12 +247,18 @@ func setMarkdownCompareContext(ctx *context.Context, before, head *git.Commit) {
 
 		baseHTML, err := renderMarkdownBlob(baseBlob, diffFile.OldName, before)
 		if err != nil {
+			if errors.Is(err, errRichDiffTooLarge) {
+				return MarkdownDiffResult{Error: ctx.Locale.TrString("repo.diff.file_suppressed")}
+			}
 			log.Error("error rendering base markdown %s: %v", diffFile.OldName, err)
 			return MarkdownDiffResult{Error: ctx.Locale.TrString("repo.diff.rich_diff_unable_to_render")}
 		}
 
 		headHTML, err := renderMarkdownBlob(headBlob, diffFile.Name, head)
 		if err != nil {
+			if errors.Is(err, errRichDiffTooLarge) {
+				return MarkdownDiffResult{Error: ctx.Locale.TrString("repo.diff.file_suppressed")}
+			}
 			log.Error("error rendering head markdown %s: %v", diffFile.Name, err)
 			return MarkdownDiffResult{Error: ctx.Locale.TrString("repo.diff.rich_diff_unable_to_render")}
 		}
@@ -253,6 +266,10 @@ func setMarkdownCompareContext(ctx *context.Context, before, head *git.Commit) {
 		return MarkdownDiffResult{Diff: gitdiff.HTMLDiff(baseHTML, headHTML)}
 	}
 }
+
+// errRichDiffTooLarge signals that a markdown blob exceeds the rich-diff size
+// limit; the caller surfaces the "file suppressed" message and skips rendering.
+var errRichDiffTooLarge = errors.New("markdown blob too large for rich diff")
 
 // ParseCompareInfo parse compare info between two commit for preparing comparing references
 func ParseCompareInfo(ctx *context.Context) *git_service.CompareInfo {
