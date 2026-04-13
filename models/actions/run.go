@@ -114,12 +114,23 @@ func (run *ActionRun) RefTooltip() string {
 	return git.RefName(run.Ref).ShortName()
 }
 
+func (run *ActionRun) LoadTriggerUser(ctx context.Context) error {
+	if run.TriggerUser == nil {
+		u, err := user_model.GetPossibleUserByID(ctx, run.TriggerUserID)
+		if err != nil {
+			if user_model.IsErrUserNotExist(err) {
+				run.TriggerUser = user_model.NewGhostUser()
+				return nil
+			}
+			return err
+		}
+		run.TriggerUser = u
+	}
+	return nil
+}
+
 // LoadAttributes load Repo TriggerUser if not loaded
 func (run *ActionRun) LoadAttributes(ctx context.Context) error {
-	if run == nil {
-		return nil
-	}
-
 	if err := run.LoadRepo(ctx); err != nil {
 		return err
 	}
@@ -128,15 +139,7 @@ func (run *ActionRun) LoadAttributes(ctx context.Context) error {
 		return err
 	}
 
-	if run.TriggerUser == nil {
-		u, err := user_model.GetPossibleUserByID(ctx, run.TriggerUserID)
-		if err != nil {
-			return err
-		}
-		run.TriggerUser = u
-	}
-
-	return nil
+	return run.LoadTriggerUser(ctx)
 }
 
 func (run *ActionRun) LoadRepo(ctx context.Context) error {

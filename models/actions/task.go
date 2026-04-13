@@ -13,6 +13,7 @@ import (
 
 	auth_model "code.gitea.io/gitea/models/auth"
 	"code.gitea.io/gitea/models/db"
+	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unit"
 	"code.gitea.io/gitea/modules/actions/jobparser"
 	"code.gitea.io/gitea/modules/log"
@@ -230,37 +231,23 @@ func makeTaskStepDisplayName(step *jobparser.Step, limit int) (name string) {
 	return util.EllipsisDisplayString(name, limit) // database column has a length limit
 }
 
-func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
-	ctx, committer, err := db.TxContext(ctx)
+// PickWaitingRunJob picks a waiting job for the runner, and returns the job and whether there is a job that can be picked.
+func PickWaitingRunJob(ctx context.Context, runner *ActionRunner) (*ActionRunJob, bool, error) {
+	// TODO: we now need to filter task_id and runs_on labels in the memory for efficiency.
+	// It can be optimized by adding more conditions in the SQL query once
+	// the database schema is ready
+	jobs, err := getWaitingRunJobsForRunner(ctx, runner)
 	if err != nil {
 		return nil, false, err
 	}
-	defer committer.Close()
-
-	e := db.GetEngine(ctx)
-
-	jobCond := builder.NewCond()
-	if runner.RepoID != 0 {
-		jobCond = builder.Eq{"repo_id": runner.RepoID}
-	} else if runner.OwnerID != 0 {
-		jobCond = builder.In("repo_id", builder.Select("`repository`.id").From("repository").
-			Join("INNER", "repo_unit", "`repository`.id = `repo_unit`.repo_id").
-			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
-	}
-	if jobCond.IsValid() {
-		jobCond = builder.In("run_id", builder.Select("id").From("action_run").Where(jobCond))
+	if len(jobs) == 0 {
+		return nil, false, nil
 	}
 
-	var jobs []*ActionRunJob
-	if err := e.Where("task_id=? AND status=?", 0, StatusWaiting).And(jobCond).Asc("updated", "id").Find(&jobs); err != nil {
-		return nil, false, err
-	}
-
-	// TODO: a more efficient way to filter labels
 	var job *ActionRunJob
 	log.Trace("runner labels: %v", runner.AgentLabels)
 	for _, v := range jobs {
-		if runner.CanMatchLabels(v.RunsOn) {
+		if v.TaskID == 0 && runner.CanMatchLabels(v.RunsOn) {
 			job = v
 			break
 		}
@@ -268,42 +255,75 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 	if job == nil {
 		return nil, false, nil
 	}
-	if err := job.LoadAttributes(ctx); err != nil {
-		return nil, false, err
+	return job, true, nil
+}
+
+// getWaitingRunJobsForRunner returns waiting jobs that can be picked by the runner, ordered by updated time and id.
+func getWaitingRunJobsForRunner(ctx context.Context, runner *ActionRunner) ([]*ActionRunJob, error) {
+	var jobCond builder.Cond
+	if runner.RepoID != 0 {
+		exist, err := repo_model.IsRepoUnitExist(ctx, runner.RepoID, unit.TypeActions)
+		if err != nil {
+			return nil, err
+		}
+		if !exist {
+			return nil, nil
+		}
+		jobCond = builder.Eq{"repo_id": runner.RepoID}
+	} else if runner.OwnerID != 0 {
+		reposWithActionsSupport := builder.Select("`repository`.id").From("repository").
+			Join("INNER", "repo_unit", "`repository`.id = `repo_unit`.repo_id").
+			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions})
+		jobCond = builder.In("repo_id", reposWithActionsSupport)
+	} else { // global runner
+		reposWithActionsSupport := builder.Select("repo_id").From("repo_unit").
+			Where(builder.Eq{"`repo_unit`.type": unit.TypeActions})
+		jobCond = builder.In("repo_id", reposWithActionsSupport)
 	}
 
-	now := timeutil.TimeStampNow()
-	job.Attempt++
-	job.Started = now
-	job.Status = StatusRunning
+	// TODO: we cannot have a limitation here because the jobs needs to be filtered by labels and task id.
+	// So that it might take much time or a very long time to load all waiting jobs if there are a lot of them.
 
+	var jobs []*ActionRunJob
+	if err := db.GetEngine(ctx).Where("status=?", StatusWaiting).And(jobCond).Asc("updated", "id").Find(&jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+func InsertActionTaskFromJob(ctx context.Context, job *ActionRunJob, runner *ActionRunner) (*ActionTask, error) {
 	task := &ActionTask{
 		JobID:             job.ID,
 		Attempt:           job.Attempt,
 		RunnerID:          runner.ID,
-		Started:           now,
+		Started:           job.Started,
 		Status:            StatusRunning,
 		RepoID:            job.RepoID,
 		OwnerID:           job.OwnerID,
 		CommitSHA:         job.CommitSHA,
 		IsForkPullRequest: job.IsForkPullRequest,
+		Job:               job,
 	}
 	if err := task.GenerateToken(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	workflowJob, err := job.ParseJob()
 	if err != nil {
-		return nil, false, fmt.Errorf("load job %d: %w", job.ID, err)
+		return nil, fmt.Errorf("load job %d: %w", job.ID, err)
 	}
 
-	if _, err := e.Insert(task); err != nil {
-		return nil, false, err
+	if _, err := db.GetEngine(ctx).Insert(task); err != nil {
+		return nil, err
 	}
 
-	task.LogFilename = logFileName(job.Run.Repo.FullName(), task.ID)
+	if err := job.LoadRepo(ctx); err != nil {
+		return nil, err
+	}
+
+	task.LogFilename = logFileName(job.Repo.FullName(), task.ID)
 	if err := UpdateTask(ctx, task, "log_filename"); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	if len(workflowJob.Steps) > 0 {
@@ -317,27 +337,15 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 				Status: StatusWaiting,
 			}
 		}
-		if _, err := e.Insert(steps); err != nil {
-			return nil, false, err
+		if _, err := db.GetEngine(ctx).Insert(steps); err != nil {
+			return nil, err
 		}
 		task.Steps = steps
 	}
-
-	job.TaskID = task.ID
-	if n, err := UpdateRunJob(ctx, job, builder.Eq{"task_id": 0}); err != nil {
-		return nil, false, err
-	} else if n != 1 {
-		return nil, false, nil
-	}
-
-	task.Job = job
-
-	if err := committer.Commit(); err != nil {
-		return nil, false, err
-	}
-
-	return task, true, nil
+	return task, nil
 }
+
+var ErrTaskAssignedToOtherRunner = errors.New("task has been assigned to another runner")
 
 func UpdateTask(ctx context.Context, task *ActionTask, cols ...string) error {
 	sess := db.GetEngine(ctx).ID(task.ID)

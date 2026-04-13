@@ -165,11 +165,24 @@ func (s *Service) FetchTask(
 		// if the task version in request is not equal to the version in db,
 		// it means there may still be some tasks that haven't been assigned.
 		// try to pick a task for the runner that send the request.
-		if t, ok, err := actions_service.PickTask(ctx, freshRunner); err != nil {
-			log.Error("pick task failed: %v", err)
-			return nil, status.Errorf(codes.Internal, "pick task: %v", err)
-		} else if ok {
-			task = t
+		// if a task is picked but assigned to another runner when processing by concurrent request,
+		// we will try to pick task again for another 2 times, so the runner has more
+		// chances to get a task without waiting for the next FetchTask request.
+		for range 3 {
+			t, ok, err := actions_service.PickTask(ctx, freshRunner)
+			if err != nil {
+				if !errors.Is(err, actions_model.ErrTaskAssignedToOtherRunner) {
+					log.Error("pick task failed: %v", err)
+					return nil, status.Errorf(codes.Internal, "pick task: %v", err)
+				}
+				// retry to pick task again
+				continue
+			}
+			// whatever get a task or not, break the loop
+			if ok {
+				task = t
+			}
+			break
 		}
 	}
 	res := connect.NewResponse(&runnerv1.FetchTaskResponse{

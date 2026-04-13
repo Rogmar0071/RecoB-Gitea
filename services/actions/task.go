@@ -11,19 +11,15 @@ import (
 	actions_model "code.gitea.io/gitea/models/actions"
 	"code.gitea.io/gitea/models/db"
 	secret_model "code.gitea.io/gitea/models/secret"
+	"code.gitea.io/gitea/modules/timeutil"
 	notify_service "code.gitea.io/gitea/services/notify"
 
 	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
 	"google.golang.org/protobuf/types/known/structpb"
+	"xorm.io/builder"
 )
 
 func PickTask(ctx context.Context, runner *actions_model.ActionRunner) (*runnerv1.Task, bool, error) {
-	var (
-		task       *runnerv1.Task
-		job        *actions_model.ActionRunJob
-		actionTask *actions_model.ActionTask
-	)
-
 	if runner.IsDisabled {
 		return nil, false, nil
 	}
@@ -48,27 +44,54 @@ func PickTask(ctx context.Context, runner *actions_model.ActionRunner) (*runnerv
 		}
 	}
 
+	job, hasTask, err := actions_model.PickWaitingRunJob(ctx, runner)
+	if err != nil {
+		return nil, false, err
+	}
+	if !hasTask {
+		return nil, false, nil
+	}
+
+	if err := job.LoadRun(ctx); err != nil {
+		return nil, false, fmt.Errorf("job LoadRun: %w", err)
+	}
+	if err := job.Run.LoadAttributes(ctx); err != nil {
+		return nil, false, fmt.Errorf("job Run LoadAttributes: %w", err)
+	}
+
+	var (
+		task       *runnerv1.Task
+		actionTask *actions_model.ActionTask
+	)
+
 	if err := db.WithTx(ctx, func(ctx context.Context) error {
-		t, ok, err := actions_model.CreateTaskForRunner(ctx, runner)
+		// create task from the job, below variable might be used inside InsertActionTaskFromJob
+		job.Started = timeutil.TimeStampNow()
+		job.Status = actions_model.StatusRunning
+		job.Attempt++
+
+		t, err := actions_model.InsertActionTaskFromJob(ctx, job, runner)
 		if err != nil {
-			return fmt.Errorf("CreateTaskForRunner: %w", err)
-		}
-		if !ok {
-			return nil
+			return err
 		}
 
-		if err := t.LoadAttributes(ctx); err != nil {
-			return fmt.Errorf("task LoadAttributes: %w", err)
+		// update job status
+		job.TaskID = t.ID
+		if n, err := actions_model.UpdateRunJob(ctx, job, builder.Eq{"task_id": 0, "status": actions_model.StatusWaiting}, "attempt", "started", "status", "task_id"); err != nil {
+			return err
+		} else if n != 1 {
+			// return nil will not roll back the transaction, so we need to return
+			// an error here to roll back the transaction and let the runner retry,
+			// but we should not treat it as an actual error.
+			return actions_model.ErrTaskAssignedToOtherRunner
 		}
-		job = t.Job
-		actionTask = t
 
 		secrets, err := secret_model.GetSecretsOfTask(ctx, t)
 		if err != nil {
 			return fmt.Errorf("GetSecretsOfTask: %w", err)
 		}
 
-		vars, err := actions_model.GetVariablesOfRun(ctx, t.Job.Run)
+		vars, err := actions_model.GetVariablesOfRun(ctx, job.Run)
 		if err != nil {
 			return fmt.Errorf("GetVariablesOfRun: %w", err)
 		}
@@ -83,6 +106,7 @@ func PickTask(ctx context.Context, runner *actions_model.ActionRunner) (*runnerv
 			return fmt.Errorf("generateTaskContext: %w", err)
 		}
 
+		actionTask = t
 		task = &runnerv1.Task{
 			Id:              t.ID,
 			WorkflowPayload: t.Job.WorkflowPayload,
@@ -95,10 +119,6 @@ func PickTask(ctx context.Context, runner *actions_model.ActionRunner) (*runnerv
 		return nil
 	}); err != nil {
 		return nil, false, err
-	}
-
-	if task == nil {
-		return nil, false, nil
 	}
 
 	CreateCommitStatusForRunJobs(ctx, job.Run, job)
