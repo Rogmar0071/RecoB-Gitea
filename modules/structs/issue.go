@@ -81,8 +81,10 @@ type Issue struct {
 	Repo        *RepositoryMeta  `json:"repository"`
 
 	PinOrder int `json:"pin_order"`
-	// The version of the issue content for optimistic locking
 	ContentVersion int `json:"content_version"`
+
+	BlockedBy []*IssueMeta `json:"blocked_by"`
+	Blocking  []*IssueMeta `json:"blocking"`
 }
 
 // CreateIssueOption options to create one issue

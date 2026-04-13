@@ -4393,6 +4393,12 @@
             "description": "Number of items per page",
             "name": "limit",
             "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "comma-separated list of additional fields: \"dependencies\" adds blocked_by and blocking issue IDs",
+            "name": "includes",
+            "in": "query"
           }
         ],
         "responses": {
@@ -9575,6 +9581,12 @@
             "description": "page size of results",
             "name": "limit",
             "in": "query"
+          },
+          {
+            "type": "string",
+            "description": "comma-separated list of additional fields: \"dependencies\" adds blocked_by and blocking issue IDs",
+            "name": "includes",
+            "in": "query"
           }
         ],
         "responses": {
@@ -10380,6 +10392,12 @@
             "name": "index",
             "in": "path",
             "required": true
+          },
+          {
+            "type": "string",
+            "description": "comma-separated list of additional fields: \"dependencies\" adds blocked_by and blocking issue IDs",
+            "name": "includes",
+            "in": "query"
           }
         ],
         "responses": {
@@ -26309,6 +26327,20 @@
           },
           "x-go-name": "Assignees"
         },
+        "blocked_by": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueMeta"
+          },
+          "x-go-name": "BlockedBy"
+        },
+        "blocking": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/IssueMeta"
+          },
+          "x-go-name": "Blocking"
+        },
         "body": {
           "type": "string",
           "x-go-name": "Body"
@@ -26324,7 +26356,6 @@
           "x-go-name": "Comments"
         },
         "content_version": {
-          "description": "The version of the issue content for optimistic locking",
           "type": "integer",
           "format": "int64",
           "x-go-name": "ContentVersion"
