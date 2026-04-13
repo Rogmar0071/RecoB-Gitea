@@ -368,8 +368,12 @@ lint-json-fix: node_modules ## lint and fix json files
 	pnpm exec eslint -c eslint.json.config.ts --color --max-warnings=0 --concurrency $(ESLINT_CONCURRENCY) --fix
 
 .PHONY: watch
-watch: ## watch everything and continuously rebuild
-	@bash tools/watch.sh
+watch: ## watch everything (optional: WATCH_DB=sqlite|mysql|pgsql|mssql WATCH_ACT=true)
+	@WATCH_DB="$(WATCH_DB)" WATCH_ACT="$(WATCH_ACT)" bash tools/watch.sh
+
+.PHONY: watch-full
+watch-full: ## watch with WATCH_DB=sqlite preset (pass WATCH_ACT=true when supported)
+	@$(MAKE) watch WATCH_DB=sqlite
 
 .PHONY: watch-frontend
 watch-frontend: node_modules ## start vite dev server for frontend
