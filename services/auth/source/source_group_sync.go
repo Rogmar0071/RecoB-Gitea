@@ -60,6 +60,28 @@ func resolveMappedMemberships(sourceUserGroups container.Set[string], sourceGrou
 			}
 		}
 	}
+
+	// If any group grants a team membership, do not remove it even if another
+	// group the user is not in also maps to that team.
+	for org, addTeams := range membershipsToAdd {
+		removeTeams, ok := membershipsToRemove[org]
+		if !ok {
+			continue
+		}
+		addSet := container.SetOf(addTeams...)
+		filtered := make([]string, 0, len(removeTeams))
+		for _, team := range removeTeams {
+			if !addSet.Contains(team) {
+				filtered = append(filtered, team)
+			}
+		}
+		if len(filtered) > 0 {
+			membershipsToRemove[org] = filtered
+		} else {
+			delete(membershipsToRemove, org)
+		}
+	}
+
 	return membershipsToAdd, membershipsToRemove
 }
 
