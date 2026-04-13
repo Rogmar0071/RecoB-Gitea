@@ -79,6 +79,7 @@
 
 	<div id="project-board" class="board {{if $canWriteProject}}sortable{{end}}" data-project-board-writable="{{$canWriteProject}}" {{if $canWriteProject}}data-url="{{$.Link}}/move"{{end}}>
 		{{range .Columns}}
+			{{$column := .}}
 			<div class="project-column" {{if .Color}}style="background: {{.Color}} !important; color: {{ContrastColor .Color}} !important"{{end}} data-id="{{.ID}}" data-sorting="{{.Sorting}}" data-url="{{$.Link}}/{{.ID}}">
 				<div class="project-column-header{{if $canWriteProject}} tw-cursor-grab{{end}}">
 					<div class="ui circular label project-column-issue-count">
@@ -100,6 +101,18 @@
 									data-modal-project-column-color-input="{{.Color}}"
 								>
 									{{svg "octicon-pencil"}} {{ctx.Locale.Tr "repo.projects.column.edit"}}
+								</a>
+								<a class="item button show-modal show-add-issue-modal" data-modal="#add-issue-modal"
+									data-modal-header="{{ctx.Locale.Tr "repo.projects.column.add_issue"}}"
+									data-modal-column-id="{{.ID}}"
+								>
+									{{svg "octicon-issue-opened"}} {{ctx.Locale.Tr "repo.projects.column.add_issue"}}
+								</a>
+								<a class="item button show-modal show-add-pull-modal" data-modal="#add-pull-modal"
+									data-modal-header="{{ctx.Locale.Tr "repo.projects.column.add_pull"}}"
+									data-modal-column-id="{{.ID}}"
+								>
+									{{svg "octicon-git-pull-request"}} {{ctx.Locale.Tr "repo.projects.column.add_pull"}}
 								</a>
 								{{if not .Default}}
 									<a class="item button link-action" data-url="{{$.Link}}/{{.ID}}/default"
@@ -123,7 +136,7 @@
 				<div class="ui cards" data-url="{{$.Link}}/{{.ID}}" data-project="{{$.Project.ID}}" data-board="{{.ID}}" id="board_{{.ID}}">
 					{{range (index $.IssuesMap .ID)}}
 						<div class="issue-card tw-break-anywhere {{if $canWriteProject}}tw-cursor-grab{{end}}" data-issue="{{.ID}}">
-							{{template "repo/issue/card" (dict "Issue" . "Page" $)}}
+							{{template "repo/issue/card" (dict "Issue" . "Page" $ "ShowUnbind" $canWriteProject "UnbindColumnID" $column.ID)}}
 						</div>
 					{{end}}
 				</div>
@@ -156,4 +169,71 @@
 		</form>
 	</div>
 </div>
+
+<div class="ui small modal" id="add-issue-modal">
+	<div class="header">{{ctx.Locale.Tr "repo.projects.column.add_issue"}}</div>
+	<div class="content">
+		<form class="ui form ignore-dirty" method="post" action="{{$.Link}}/add-issue">
+			{{.CsrfTokenHtml}}
+			<input type="hidden" name="column_id" id="add-issue-column-id">
+			{{if .Repository}}
+				<input type="hidden" name="repo" id="issue-repo" value="{{.Repository.ID}}" data-owner="{{.Repository.OwnerName}}" data-name="{{.Repository.Name}}">
+			{{else}}
+				<div class="required field">
+					<label for="issue-repo">{{ctx.Locale.Tr "repo.issues.new.repo"}}</label>
+					<select name="repo" id="issue-repo" required class="tw-w-full tw-p-2">
+						<option value="">{{ctx.Locale.Tr "repo.issues.choose_repo"}}</option>
+						{{range .AvailableRepos}}
+							<option value="{{.ID}}" data-owner="{{.OwnerName}}" data-name="{{.Name}}">{{.Name}}</option>
+						{{end}}
+					</select>
+				</div>
+			{{end}}
+			<div class="required field">
+				<label for="issue-number">{{ctx.Locale.Tr "repo.issues.number"}}</label>
+				<select name="issue_number" id="issue-number" required {{if .Repository}}{{else}}disabled{{end}} class="tw-w-full tw-p-2">
+					<option value="">{{ctx.Locale.Tr "repo.issues.choose_issue"}}</option>
+				</select>
+			</div>
+			<div class="actions">
+				<button class="ui cancel button">{{ctx.Locale.Tr "settings.cancel"}}</button>
+				<button type="submit" class="ui primary button">{{ctx.Locale.Tr "repo.projects.column.add_issue"}}</button>
+			</div>
+		</form>
+	</div>
+</div>
+
+<div class="ui small modal" id="add-pull-modal">
+	<div class="header">{{ctx.Locale.Tr "repo.projects.column.add_pull"}}</div>
+	<div class="content">
+		<form class="ui form ignore-dirty" method="post" action="{{$.Link}}/add-pull">
+			{{.CsrfTokenHtml}}
+			<input type="hidden" name="column_id" id="add-pull-column-id">
+			{{if .Repository}}
+				<input type="hidden" name="repo" id="pull-repo" value="{{.Repository.ID}}" data-owner="{{.Repository.OwnerName}}" data-name="{{.Repository.Name}}">
+			{{else}}
+				<div class="required field">
+					<label for="pull-repo">{{ctx.Locale.Tr "repo.pulls.new.repo"}}</label>
+					<select name="repo" id="pull-repo" required class="tw-w-full tw-p-2">
+						<option value="">{{ctx.Locale.Tr "repo.pulls.choose_repo"}}</option>
+						{{range .AvailableRepos}}
+							<option value="{{.ID}}" data-owner="{{.OwnerName}}" data-name="{{.Name}}">{{.Name}}</option>
+						{{end}}
+					</select>
+				</div>
+			{{end}}
+			<div class="required field">
+				<label for="pull-number">{{ctx.Locale.Tr "repo.pulls.number"}}</label>
+				<select name="pull_number" id="pull-number" required {{if .Repository}}{{else}}disabled{{end}} class="tw-w-full tw-p-2">
+					<option value="">{{ctx.Locale.Tr "repo.pulls.choose_pull"}}</option>
+				</select>
+			</div>
+			<div class="actions">
+				<button class="ui cancel button">{{ctx.Locale.Tr "settings.cancel"}}</button>
+				<button type="submit" class="ui primary button">{{ctx.Locale.Tr "repo.projects.column.add_pull"}}</button>
+			</div>
+		</form>
+	</div>
+</div>
+
 {{end}}
