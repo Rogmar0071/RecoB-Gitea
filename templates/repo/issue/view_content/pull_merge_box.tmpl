@@ -10,18 +10,19 @@
 >
 	{{$statusCheckData := .StatusCheckData}}
 	{{$requiredStatusCheckState := $statusCheckData.RequiredChecksState}}
+	{{$canBypass := $.CanBypassBranchProtection}}
 	<div class="timeline-avatar {{if .Issue.PullRequest.HasMerged}}tw-text-purple
 	{{- else if .Issue.IsClosed}}tw-text-text-light
 	{{- else if .IsPullWorkInProgress}}tw-text-text-light
 	{{- else if .IsFilesConflicted}}tw-text-text-light
 	{{- else if .IsPullRequestBroken}}tw-text-red
-	{{- else if .IsBlockedByApprovals}}tw-text-red
-	{{- else if .IsBlockedByRejection}}tw-text-red
-	{{- else if .IsBlockedByOfficialReviewRequests}}tw-text-red
-	{{- else if .IsBlockedByOutdatedBranch}}tw-text-red
-	{{- else if .IsBlockedByChangedProtectedFiles}}tw-text-red
-	{{- else if and .EnableStatusCheck (or $requiredStatusCheckState.IsFailure $requiredStatusCheckState.IsError)}}tw-text-red
-	{{- else if and .EnableStatusCheck (or (not $.LatestCommitStatus) $requiredStatusCheckState.IsPending $requiredStatusCheckState.IsWarning)}}tw-text-yellow
+	{{- else if and .IsBlockedByApprovals (not $canBypass)}}tw-text-red
+	{{- else if and .IsBlockedByRejection (not $canBypass)}}tw-text-red
+	{{- else if and .IsBlockedByOfficialReviewRequests (not $canBypass)}}tw-text-red
+	{{- else if and .IsBlockedByOutdatedBranch (not $canBypass)}}tw-text-red
+	{{- else if and .IsBlockedByChangedProtectedFiles (not $canBypass)}}tw-text-red
+	{{- else if and .EnableStatusCheck (or $requiredStatusCheckState.IsFailure $requiredStatusCheckState.IsError) (not $canBypass)}}tw-text-red
+	{{- else if and .EnableStatusCheck (or (not $.LatestCommitStatus) $requiredStatusCheckState.IsPending $requiredStatusCheckState.IsWarning) (not $canBypass)}}tw-text-yellow
 	{{- else if and .AllowMerge .RequireSigned (not .WillSign)}}tw-text-red
 	{{- else if .Issue.PullRequest.IsChecking}}tw-text-yellow
 	{{- else if .Issue.PullRequest.IsEmpty}}tw-text-text-light
@@ -115,7 +116,8 @@
 					{{ctx.Locale.Tr "repo.pulls.is_ancestor"}}
 				</div>
 			{{else if or .Issue.PullRequest.CanAutoMerge .Issue.PullRequest.IsEmpty}}
-				{{if .IsBlockedByApprovals}}
+				{{/* When the viewer can bypass branch protection, do not show red "blocked" lines for checks that a force-merge can skip — only the bypass notice below applies. Signing is not bypassed. */}}
+				{{if and .IsBlockedByApprovals (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 						{{if .RequireApprovalsWhitelist}}
@@ -124,22 +126,22 @@
 							{{ctx.Locale.Tr "repo.pulls.blocked_by_approvals" .GrantedApprovals .ProtectedBranch.RequiredApprovals}}
 						{{end}}
 					</div>
-				{{else if .IsBlockedByRejection}}
+				{{else if and .IsBlockedByRejection (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 					{{ctx.Locale.Tr "repo.pulls.blocked_by_rejection"}}
 					</div>
-				{{else if .IsBlockedByOfficialReviewRequests}}
+				{{else if and .IsBlockedByOfficialReviewRequests (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 					{{ctx.Locale.Tr "repo.pulls.blocked_by_official_review_requests"}}
 					</div>
-				{{else if .IsBlockedByOutdatedBranch}}
+				{{else if and .IsBlockedByOutdatedBranch (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 						{{ctx.Locale.Tr "repo.pulls.blocked_by_outdated_branch"}}
 					</div>
-				{{else if .IsBlockedByChangedProtectedFiles}}
+				{{else if and .IsBlockedByChangedProtectedFiles (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 						{{ctx.Locale.TrN $.ChangedProtectedFilesNum "repo.pulls.blocked_by_changed_protected_files_1" "repo.pulls.blocked_by_changed_protected_files_n"}}
@@ -149,12 +151,12 @@
 						<li>{{.}}</li>
 						{{end}}
 					</ul>
-				{{else if and .EnableStatusCheck (or $requiredStatusCheckState.IsError $requiredStatusCheckState.IsFailure)}}
+				{{else if and .EnableStatusCheck (or $requiredStatusCheckState.IsError $requiredStatusCheckState.IsFailure) (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 						{{ctx.Locale.Tr "repo.pulls.required_status_check_failed"}}
 					</div>
-				{{else if and .EnableStatusCheck (not $requiredStatusCheckState.IsSuccess)}}
+				{{else if and .EnableStatusCheck (not $requiredStatusCheckState.IsSuccess) (not $canBypass)}}
 					<div class="item">
 						{{svg "octicon-x"}}
 						{{ctx.Locale.Tr "repo.pulls.required_status_check_missing"}}
@@ -173,14 +175,18 @@
 				{{$notAllOverridableChecksOk := or .IsBlockedByApprovals .IsBlockedByRejection .IsBlockedByOfficialReviewRequests .IsBlockedByOutdatedBranch .IsBlockedByChangedProtectedFiles (and .EnableStatusCheck (not $requiredStatusCheckState.IsSuccess))}}
 
 				{{/* admin can merge without checks, writer can merge when checks succeed */}}
-				{{$canMergeNow := and (or (and (not $.ProtectedBranch.BlockAdminMergeOverride) $.IsRepoAdmin) (not $notAllOverridableChecksOk)) (or (not .AllowMerge) (not .RequireSigned) .WillSign)}}
+				{{$canMergeNow := and (or $canBypass (not $notAllOverridableChecksOk)) (or (not .AllowMerge) (not .RequireSigned) .WillSign)}}
 				{{/* admin and writer both can make an auto merge schedule */}}
 
 				{{if $canMergeNow}}
 					{{if $notAllOverridableChecksOk}}
 						<div class="item">
 							{{svg "octicon-dot-fill"}}
-							{{ctx.Locale.Tr "repo.pulls.required_status_check_administrator"}}
+							{{if $.CanAdminBypassBranchProtection}}
+								{{ctx.Locale.Tr "repo.pulls.required_status_check_administrator"}}
+							{{else}}
+								{{ctx.Locale.Tr "repo.pulls.required_status_check_bypass_allowlist"}}
+							{{end}}
 						</div>
 					{{else}}
 						<div class="item">

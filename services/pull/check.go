@@ -132,7 +132,7 @@ const (
 )
 
 // CheckPullMergeable check if the pull mergeable based on all conditions (branch protection, merge options, ...)
-func CheckPullMergeable(stdCtx context.Context, doer *user_model.User, perm *access_model.Permission, pr *issues_model.PullRequest, mergeCheckType MergeCheckType, adminForceMerge bool) error {
+func CheckPullMergeable(stdCtx context.Context, doer *user_model.User, perm *access_model.Permission, pr *issues_model.PullRequest, mergeCheckType MergeCheckType, tryForceMerge bool) error {
 	return db.WithTx(stdCtx, func(ctx context.Context) error {
 		if pr.HasMerged {
 			return ErrHasMerged
@@ -169,21 +169,21 @@ func CheckPullMergeable(stdCtx context.Context, doer *user_model.User, perm *acc
 			return ErrIsChecking
 		}
 
-		if err := CheckPullBranchProtections(ctx, pr, false); err != nil {
-			if !errors.Is(err, ErrNotReadyToMerge) {
-				log.Error("Error whilst checking pull branch protection for %-v: %v", pr, err)
-				return err
+		if errProtection := CheckPullBranchProtections(ctx, pr, false); errProtection != nil {
+			if !errors.Is(errProtection, ErrNotReadyToMerge) {
+				log.Error("Error whilst checking pull branch protection for %-v: %v", pr, errProtection)
+				return errProtection
 			}
 
 			// Now the branch protection check failed, check whether the failure could be skipped (skip by setting err = nil)
 
 			// * when doing Auto Merge (Scheduled Merge After Checks Succeed), skip the branch protection check
 			if mergeCheckType == MergeCheckTypeAuto {
-				err = nil
+				errProtection = nil
 			}
 
-			// * if admin tries to "Force Merge", they could sometimes skip the branch protection check
-			if adminForceMerge {
+			// * if the doer tries to "Force Merge", check whether it is really allowed
+			if tryForceMerge {
 				isRepoAdmin, errForceMerge := access_model.IsUserRepoAdmin(ctx, pr.BaseRepo, doer)
 				if errForceMerge != nil {
 					return fmt.Errorf("IsUserRepoAdmin failed, repo: %v, doer: %v, err: %w", pr.BaseRepoID, doer.ID, errForceMerge)
@@ -194,16 +194,19 @@ func CheckPullMergeable(stdCtx context.Context, doer *user_model.User, perm *acc
 					return fmt.Errorf("GetFirstMatchProtectedBranchRule failed, repo: %v, base branch: %v, err: %w", pr.BaseRepoID, pr.BaseBranch, errForceMerge)
 				}
 
-				// if doer is admin and the "Force Merge" is not blocked, then clear the branch protection check error
-				blockAdminForceMerge := protectedBranchRule != nil && protectedBranchRule.BlockAdminMergeOverride
-				if isRepoAdmin && !blockAdminForceMerge {
-					err = nil
+				canForceMerge := protectedBranchRule == nil && isRepoAdmin
+				if !canForceMerge {
+					_, canBypass := git_model.CanBypassBranchProtection(ctx, protectedBranchRule, doer, isRepoAdmin)
+					canForceMerge = canBypass
+				}
+				if canForceMerge {
+					errProtection = nil
 				}
 			}
 
 			// If there is still a branch protection check error, return it
-			if err != nil {
-				return err
+			if errProtection != nil {
+				return errProtection
 			}
 		}
 
