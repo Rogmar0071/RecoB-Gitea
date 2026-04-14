@@ -121,8 +121,9 @@ func NewIssue(ctx *context.Context) {
 	}
 
 	pageMetaData.MilestonesData.SelectedMilestoneID = ctx.FormInt64("milestone")
-	pageMetaData.ProjectsData.SelectedProjectIDs, _ = base.StringsToInt64s(strings.Split(ctx.FormString("project"), ","))
-	if len(pageMetaData.ProjectsData.SelectedProjectIDs) == 1 {
+	projectIDs, _ := base.StringsToInt64s(strings.Split(ctx.FormString("project"), ","))
+	if len(projectIDs) == 1 {
+		pageMetaData.ProjectsData.SelectedProjectIDs = projectIDs
 		ctx.Data["redirect_after_creation"] = "project"
 	}
 
