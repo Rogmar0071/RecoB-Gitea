@@ -476,6 +476,15 @@ func oAuth2UserLoginCallback(ctx *context.Context, authSource *auth.Source, requ
 		}
 	}
 
+	if provider := oauth2.GetAdditionalInfoProvider(oauth2Source, &gothUser); provider != nil {
+		enriched, err := provider.FetchAdditionalInfo(ctx, gothUser)
+		if err != nil {
+			log.Warn("OAuth2: failed to fetch additional info for %s: %v", gothUser.Email, err)
+		} else {
+			gothUser = enriched
+		}
+	}
+
 	user := &user_model.User{
 		LoginName:   gothUser.UserID,
 		LoginType:   auth.OAuth2,
