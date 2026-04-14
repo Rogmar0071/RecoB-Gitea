@@ -23628,6 +23628,12 @@
           "format": "int64",
           "x-go-name": "Milestone"
         },
+        "project": {
+          "description": "project id",
+          "type": "integer",
+          "format": "int64",
+          "x-go-name": "Project"
+        },
         "ref": {
           "type": "string",
           "x-go-name": "Ref"
@@ -24864,6 +24870,11 @@
           "type": "integer",
           "format": "int64",
           "x-go-name": "Milestone"
+        },
+        "project": {
+          "type": "integer",
+          "format": "int64",
+          "x-go-name": "Project"
         },
         "ref": {
           "type": "string",
@@ -26381,6 +26392,9 @@
           "format": "int64",
           "x-go-name": "PinOrder"
         },
+        "project": {
+          "$ref": "#/definitions/ProjectMeta"
+        },
         "pull_request": {
           "$ref": "#/definitions/PullRequestMeta"
         },
@@ -27719,6 +27733,24 @@
         "push": {
           "type": "boolean",
           "x-go-name": "Push"
+        }
+      },
+      "x-go-package": "code.gitea.io/gitea/modules/structs"
+    },
+    "ProjectMeta": {
+      "description": "ProjectMeta contains project metadata for API responses",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "ID is the unique identifier for the project",
+          "type": "integer",
+          "format": "int64",
+          "x-go-name": "ID"
+        },
+        "title": {
+          "description": "Title is the title of the project",
+          "type": "string",
+          "x-go-name": "Title"
         }
       },
       "x-go-package": "code.gitea.io/gitea/modules/structs"

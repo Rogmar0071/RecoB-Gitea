@@ -11,6 +11,7 @@ import (
 
 	issues_model "code.gitea.io/gitea/models/issues"
 	access_model "code.gitea.io/gitea/models/perm/access"
+	project_model "code.gitea.io/gitea/models/project"
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/cache"
@@ -124,13 +125,29 @@ func toIssue(ctx context.Context, doer *user_model.User, issue *issues_model.Iss
 		apiIssue.Deadline = issue.DeadlineUnix.AsTimePtr()
 	}
 
+	if err := issue.LoadProject(ctx); err != nil {
+		return &api.Issue{}
+	}
+	if issue.Project != nil {
+		apiIssue.Project = ToAPIProjectMeta(issue.Project)
+	}
+
 	return apiIssue
+}
+
+// ToAPIProjectMeta converts a Project to its API metadata representation
+func ToAPIProjectMeta(p *project_model.Project) *api.ProjectMeta {
+	return &api.ProjectMeta{
+		ID:    p.ID,
+		Title: p.Title,
+	}
 }
 
 // ToIssueList converts an IssueList to API format
 func ToIssueList(ctx context.Context, doer *user_model.User, il issues_model.IssueList) []*api.Issue {
 	result := make([]*api.Issue, len(il))
 	_ = il.LoadPinOrder(ctx)
+	_ = il.LoadProjects(ctx)
 	for i := range il {
 		result[i] = ToIssue(ctx, doer, il[i])
 	}
@@ -141,6 +158,7 @@ func ToIssueList(ctx context.Context, doer *user_model.User, il issues_model.Iss
 func ToAPIIssueList(ctx context.Context, doer *user_model.User, il issues_model.IssueList) []*api.Issue {
 	result := make([]*api.Issue, len(il))
 	_ = il.LoadPinOrder(ctx)
+	_ = il.LoadProjects(ctx)
 	for i := range il {
 		result[i] = ToAPIIssue(ctx, doer, il[i])
 	}

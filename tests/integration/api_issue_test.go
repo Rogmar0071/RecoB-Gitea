@@ -14,6 +14,7 @@ import (
 
 	auth_model "code.gitea.io/gitea/models/auth"
 	issues_model "code.gitea.io/gitea/models/issues"
+	project_model "code.gitea.io/gitea/models/project"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
@@ -35,6 +36,7 @@ func TestAPIIssue(t *testing.T) {
 	t.Run("IssueContentVersion", testAPIIssueContentVersion)
 	t.Run("CreateIssue", testAPICreateIssue)
 	t.Run("CreateIssueParallel", testAPICreateIssueParallel)
+	t.Run("IssueProject", testAPIIssueProject)
 }
 
 func testAPIListIssues(t *testing.T) {
@@ -499,4 +501,71 @@ func testAPIIssueContentVersion(t *testing.T) {
 		}).AddTokenAuth(token)
 		MakeRequest(t, req, http.StatusCreated)
 	})
+}
+
+func testAPIIssueProject(t *testing.T) {
+	repo := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: repo.OwnerID})
+
+	session := loginUser(t, owner.Name)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeWriteIssue)
+
+	urlStr := fmt.Sprintf("/api/v1/repos/%s/%s/issues", owner.Name, repo.Name)
+	req := NewRequestWithJSON(t, "POST", urlStr, &api.CreateIssueOption{
+		Title:   "issue with project",
+		Project: 1,
+	}).AddTokenAuth(token)
+	resp := MakeRequest(t, req, http.StatusCreated)
+	var apiIssue api.Issue
+	DecodeJSON(t, resp, &apiIssue)
+	assert.NotNil(t, apiIssue.Project)
+	assert.Equal(t, int64(1), apiIssue.Project.ID)
+	assert.NotEmpty(t, apiIssue.Project.Title)
+
+	editURL := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner.Name, repo.Name, apiIssue.Index)
+	noProject := int64(0)
+	req = NewRequestWithJSON(t, "PATCH", editURL, api.EditIssueOption{
+		Project: &noProject,
+	}).AddTokenAuth(token)
+	resp = MakeRequest(t, req, http.StatusCreated)
+	DecodeJSON(t, resp, &apiIssue)
+	assert.Nil(t, apiIssue.Project)
+
+	projectID := int64(1)
+	req = NewRequestWithJSON(t, "PATCH", editURL, api.EditIssueOption{
+		Project: &projectID,
+	}).AddTokenAuth(token)
+	resp = MakeRequest(t, req, http.StatusCreated)
+	DecodeJSON(t, resp, &apiIssue)
+	assert.NotNil(t, apiIssue.Project)
+	assert.Equal(t, int64(1), apiIssue.Project.ID)
+
+	projectIssue := unittest.AssertExistsAndLoadBean(t, &project_model.ProjectIssue{IssueID: apiIssue.ID, ProjectID: projectID})
+	projectCommentCount := unittest.GetCount(t, &issues_model.Comment{IssueID: apiIssue.ID, Type: issues_model.CommentTypeProject})
+	assert.Equal(t, 3, projectCommentCount)
+
+	req = NewRequestWithJSON(t, "PATCH", editURL, api.EditIssueOption{
+		Project: &projectID,
+	}).AddTokenAuth(token)
+	resp = MakeRequest(t, req, http.StatusCreated)
+	DecodeJSON(t, resp, &apiIssue)
+	assert.NotNil(t, apiIssue.Project)
+	assert.Equal(t, int64(1), apiIssue.Project.ID)
+
+	projectIssueAfter := unittest.AssertExistsAndLoadBean(t, &project_model.ProjectIssue{IssueID: apiIssue.ID, ProjectID: projectID})
+	assert.Equal(t, projectIssue.ID, projectIssueAfter.ID)
+	assert.Equal(t, projectIssue.Sorting, projectIssueAfter.Sorting)
+	assert.Equal(t, projectCommentCount, unittest.GetCount(t, &issues_model.Comment{IssueID: apiIssue.ID, Type: issues_model.CommentTypeProject}))
+
+	req = NewRequestWithJSON(t, "POST", urlStr, &api.CreateIssueOption{
+		Title:   "issue with invalid project",
+		Project: 999999,
+	}).AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusUnprocessableEntity)
+
+	invalidProjectID := int64(999999)
+	req = NewRequestWithJSON(t, "PATCH", editURL, api.EditIssueOption{
+		Project: &invalidProjectID,
+	}).AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusUnprocessableEntity)
 }

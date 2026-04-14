@@ -654,9 +654,11 @@ func CreateIssue(ctx *context.APIContext) {
 	}
 
 	assigneeIDs := make([]int64, 0)
+	var projectID int64
 	var err error
 	if ctx.Repo.CanWrite(unit.TypeIssues) {
 		issue.MilestoneID = form.Milestone
+		projectID = form.Project
 		assigneeIDs, err = issues_model.MakeIDsFromAPIAssigneesToAdd(ctx, form.Assignee, form.Assignees)
 		if err != nil {
 			if user_model.IsErrUserNotExist(err) {
@@ -690,11 +692,13 @@ func CreateIssue(ctx *context.APIContext) {
 		form.Labels = make([]int64, 0)
 	}
 
-	if err := issue_service.NewIssue(ctx, ctx.Repo.Repository, issue, form.Labels, nil, assigneeIDs, 0); err != nil {
+	if err := issue_service.NewIssue(ctx, ctx.Repo.Repository, issue, form.Labels, nil, assigneeIDs, projectID); err != nil {
 		if repo_model.IsErrUserDoesNotHaveAccessToRepo(err) {
 			ctx.APIError(http.StatusBadRequest, err)
 		} else if errors.Is(err, user_model.ErrBlockedUser) {
 			ctx.APIError(http.StatusForbidden, err)
+		} else if errors.Is(err, util.ErrPermissionDenied) || errors.Is(err, util.ErrNotExist) {
+			ctx.APIError(http.StatusUnprocessableEntity, err)
 		} else {
 			ctx.APIErrorInternal(err)
 		}
@@ -894,6 +898,23 @@ func EditIssue(ctx *context.APIContext) {
 			return
 		}
 	}
+	if canWrite && form.Project != nil {
+		currentProjectID := int64(0)
+		if issue.Project != nil {
+			currentProjectID = issue.Project.ID
+		}
+		if currentProjectID != *form.Project {
+			if err := issues_model.IssueAssignOrRemoveProject(ctx, issue, ctx.Doer, *form.Project, 0); err != nil {
+				if errors.Is(err, util.ErrPermissionDenied) || errors.Is(err, util.ErrNotExist) {
+					ctx.APIError(http.StatusUnprocessableEntity, err)
+					return
+				}
+				ctx.APIErrorInternal(err)
+				return
+			}
+		}
+	}
+
 	if form.State != nil {
 		if issue.IsPull {
 			if err := issue.LoadPullRequest(ctx); err != nil {
