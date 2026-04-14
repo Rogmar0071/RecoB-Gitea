@@ -7,34 +7,49 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/modules/container"
+	"code.gitea.io/gitea/modules/log"
 )
 
 // UI settings
 var UI = struct {
-	ExplorePagingNum      int
-	SitemapPagingNum      int
-	IssuePagingNum        int
-	RepoSearchPagingNum   int
-	MembersPagingNum      int
-	FeedMaxCommitNum      int
-	FeedPagingNum         int
-	PackagesPagingNum     int
-	GraphMaxCommitNum     int
-	CodeCommentLines      int
-	ReactionMaxUserNum    int
-	ThemeColorMetaTag     string
-	MaxDisplayFileSize    int64
-	ShowUserEmail         bool
-	DefaultShowFullName   bool
-	DefaultTheme          string
-	Themes                []string
-	Reactions             []string
-	ReactionsLookup       container.Set[string] `ini:"-"`
-	CustomEmojis          []string
-	CustomEmojisMap       map[string]string `ini:"-"`
-	SearchRepoDescription bool
-	UseServiceWorker      bool
-	OnlyShowRelevantRepos bool
+	ExplorePagingNum        int
+	SitemapPagingNum        int
+	IssuePagingNum          int
+	RepoSearchPagingNum     int
+	MembersPagingNum        int
+	FeedMaxCommitNum        int
+	FeedPagingNum           int
+	PackagesPagingNum       int
+	GraphMaxCommitNum       int
+	CodeCommentLines        int
+	ReactionMaxUserNum      int
+	MaxDisplayFileSize      int64
+	ShowUserEmail           bool
+	DefaultTheme            string
+	Themes                  []string
+	FileIconTheme           string
+	FolderIconTheme         string
+	Reactions               []string
+	ReactionsLookup         container.Set[string] `ini:"-"`
+	CustomEmojis            []string
+	CustomEmojisMap         map[string]string `ini:"-"`
+	EnabledEmojis           []string
+	EnabledEmojisSet        container.Set[string] `ini:"-"`
+	SearchRepoDescription   bool
+	OnlyShowRelevantRepos   bool
+	ExploreDefaultSort      string `ini:"EXPLORE_PAGING_DEFAULT_SORT"`
+	PreferredTimestampTense string
+
+	AmbiguousUnicodeDetection bool
+
+	// TODO: DefaultShowFullName is introduced by https://github.com/go-gitea/gitea/pull/6710
+	// But there are still many edge cases:
+	// * Many places still use "username", not respecting this setting
+	// * Many places use "Full Name" if it is not empty, cause inconsistent UI for users who have set their full name but some others don't
+	// * Even if DefaultShowFullName=false, many places still need to show the full name
+	// For most cases, either "username" or "username (Full Name)" should be used and are good enough.
+	// Only in very few cases (e.g.: unimportant lists, narrow layout), "username" or "Full Name" can be used.
+	DefaultShowFullName bool
 
 	Notification struct {
 		MinTimeout            time.Duration
@@ -49,6 +64,7 @@ var UI = struct {
 
 	CSV struct {
 		MaxFileSize int64
+		MaxRows     int
 	} `ini:"ui.csv"`
 
 	Admin struct {
@@ -59,6 +75,7 @@ var UI = struct {
 	} `ini:"ui.admin"`
 	User struct {
 		RepoPagingNum int
+		OrgPagingNum  int
 	} `ini:"ui.user"`
 	Meta struct {
 		Author      string
@@ -66,24 +83,29 @@ var UI = struct {
 		Keywords    string
 	} `ini:"ui.meta"`
 }{
-	ExplorePagingNum:    20,
-	SitemapPagingNum:    20,
-	IssuePagingNum:      20,
-	RepoSearchPagingNum: 20,
-	MembersPagingNum:    20,
-	FeedMaxCommitNum:    5,
-	FeedPagingNum:       20,
-	PackagesPagingNum:   20,
-	GraphMaxCommitNum:   100,
-	CodeCommentLines:    4,
-	ReactionMaxUserNum:  10,
-	ThemeColorMetaTag:   ``,
-	MaxDisplayFileSize:  8388608,
-	DefaultTheme:        `auto`,
-	Themes:              []string{`auto`, `gitea`, `arc-green`},
-	Reactions:           []string{`+1`, `-1`, `laugh`, `hooray`, `confused`, `heart`, `rocket`, `eyes`},
-	CustomEmojis:        []string{`git`, `gitea`, `codeberg`, `gitlab`, `github`, `gogs`},
-	CustomEmojisMap:     map[string]string{"git": ":git:", "gitea": ":gitea:", "codeberg": ":codeberg:", "gitlab": ":gitlab:", "github": ":github:", "gogs": ":gogs:"},
+	ExplorePagingNum:        20,
+	SitemapPagingNum:        20,
+	IssuePagingNum:          20,
+	RepoSearchPagingNum:     20,
+	MembersPagingNum:        20,
+	FeedMaxCommitNum:        5,
+	FeedPagingNum:           20,
+	PackagesPagingNum:       20,
+	GraphMaxCommitNum:       100,
+	CodeCommentLines:        4,
+	ReactionMaxUserNum:      10,
+	MaxDisplayFileSize:      8388608,
+	DefaultTheme:            `gitea-auto`,
+	FileIconTheme:           `material`,
+	FolderIconTheme:         `basic`,
+	Reactions:               []string{`+1`, `-1`, `laugh`, `hooray`, `confused`, `heart`, `rocket`, `eyes`},
+	CustomEmojis:            []string{`git`, `gitea`, `codeberg`, `gitlab`, `github`, `gogs`},
+	CustomEmojisMap:         map[string]string{"git": ":git:", "gitea": ":gitea:", "codeberg": ":codeberg:", "gitlab": ":gitlab:", "github": ":github:", "gogs": ":gogs:"},
+	ExploreDefaultSort:      "recentupdate",
+	PreferredTimestampTense: "mixed",
+
+	AmbiguousUnicodeDetection: true,
+
 	Notification: struct {
 		MinTimeout            time.Duration
 		TimeoutStep           time.Duration
@@ -102,8 +124,10 @@ var UI = struct {
 	},
 	CSV: struct {
 		MaxFileSize int64
+		MaxRows     int
 	}{
 		MaxFileSize: 524288,
+		MaxRows:     2500,
 	},
 	Admin: struct {
 		UserPagingNum   int
@@ -118,8 +142,10 @@ var UI = struct {
 	},
 	User: struct {
 		RepoPagingNum int
+		OrgPagingNum  int
 	}{
 		RepoPagingNum: 15,
+		OrgPagingNum:  15,
 	},
 	Meta: struct {
 		Author      string
@@ -138,7 +164,10 @@ func loadUIFrom(rootCfg ConfigProvider) {
 	UI.ShowUserEmail = sec.Key("SHOW_USER_EMAIL").MustBool(true)
 	UI.DefaultShowFullName = sec.Key("DEFAULT_SHOW_FULL_NAME").MustBool(false)
 	UI.SearchRepoDescription = sec.Key("SEARCH_REPO_DESCRIPTION").MustBool(true)
-	UI.UseServiceWorker = sec.Key("USE_SERVICE_WORKER").MustBool(false)
+
+	if UI.PreferredTimestampTense != "mixed" && UI.PreferredTimestampTense != "absolute" {
+		log.Fatal("ui.PREFERRED_TIMESTAMP_TENSE must be either 'mixed' or 'absolute'")
+	}
 
 	// OnlyShowRelevantRepos=false is important for many private/enterprise instances,
 	// because many private repositories do not have "description/topic", users just want to search by their names.
@@ -152,4 +181,5 @@ func loadUIFrom(rootCfg ConfigProvider) {
 	for _, emoji := range UI.CustomEmojis {
 		UI.CustomEmojisMap[emoji] = ":" + emoji + ":"
 	}
+	UI.EnabledEmojisSet = container.SetOf(UI.EnabledEmojis...)
 }

@@ -5,60 +5,73 @@ package auth
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"code.gitea.io/gitea/models/auth"
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/base"
-	"code.gitea.io/gitea/modules/context"
+	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/templates"
+	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/modules/web"
 	auth_service "code.gitea.io/gitea/services/auth"
 	"code.gitea.io/gitea/services/auth/source/oauth2"
+	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/externalaccount"
 	"code.gitea.io/gitea/services/forms"
-
-	"github.com/markbates/goth"
 )
 
-var tplLinkAccount base.TplName = "user/auth/link_account"
+var tplLinkAccount templates.TplName = "user/auth/link_account"
 
-// LinkAccount shows the page where the user can decide to login or create a new account
-func LinkAccount(ctx *context.Context) {
+func prepareLinkAccountPageData(ctx *context.Context) {
+	// TODO Make insecure passwords optional for local accounts also, once email-based Second-Factor Auth is available
 	ctx.Data["DisablePassword"] = !setting.Service.RequireExternalRegistrationPassword || setting.Service.AllowOnlyExternalRegistration
+
 	ctx.Data["Title"] = ctx.Tr("link_account")
 	ctx.Data["LinkAccountMode"] = true
-	ctx.Data["EnableCaptcha"] = setting.Service.EnableCaptcha && setting.Service.RequireExternalRegistrationCaptcha
-	ctx.Data["Captcha"] = context.GetImageCaptcha()
-	ctx.Data["CaptchaType"] = setting.Service.CaptchaType
-	ctx.Data["RecaptchaURL"] = setting.Service.RecaptchaURL
-	ctx.Data["RecaptchaSitekey"] = setting.Service.RecaptchaSitekey
-	ctx.Data["HcaptchaSitekey"] = setting.Service.HcaptchaSitekey
-	ctx.Data["McaptchaSitekey"] = setting.Service.McaptchaSitekey
-	ctx.Data["McaptchaURL"] = setting.Service.McaptchaURL
-	ctx.Data["DisableRegistration"] = setting.Service.DisableRegistration
-	ctx.Data["AllowOnlyInternalRegistration"] = setting.Service.AllowOnlyInternalRegistration
-	ctx.Data["ShowRegistrationButton"] = false
 
 	// use this to set the right link into the signIn and signUp templates in the link_account template
 	ctx.Data["SignInLink"] = setting.AppSubURL + "/user/link_account_signin"
 	ctx.Data["SignUpLink"] = setting.AppSubURL + "/user/link_account_signup"
+	ctx.Data["ShowRegistrationButton"] = false
+	ctx.Data["DisableRegistration"] = setting.Service.DisableRegistration
 
-	gothUser := ctx.Session.Get("linkAccountGothUser")
-	if gothUser == nil {
-		ctx.ServerError("UserSignIn", errors.New("not in LinkAccount session"))
+	prepareCommonAuthPageData(ctx, CommonAuthOptions{
+		EnableCaptcha: setting.Service.EnableCaptcha && setting.Service.RequireExternalRegistrationCaptcha,
+	})
+}
+
+// LinkAccount shows the page where the user can decide to login or create a new account
+func LinkAccount(ctx *context.Context) {
+	prepareLinkAccountPageData(ctx)
+
+	linkAccountData := oauth2GetLinkAccountData(ctx)
+
+	// If you'd like to quickly debug the "link account" page layout, just uncomment the blow line
+	// Don't worry, when the below line exists, the lint won't pass: ineffectual assignment to gothUser (ineffassign)
+	// linkAccountData = &LinkAccountData{authSource, gothUser} // intentionally use invalid data to avoid pass the registration check
+
+	if linkAccountData == nil {
+		// no account in session, so just redirect to the login page, then the user could restart the process
+		ctx.Redirect(setting.AppSubURL + "/user/login")
 		return
 	}
 
-	gu, _ := gothUser.(goth.User)
-	uname := getUserName(&gu)
-	email := gu.Email
+	if missingFields, ok := linkAccountData.GothUser.RawData["__giteaAutoRegMissingFields"].([]string); ok {
+		ctx.Data["AutoRegistrationFailedPrompt"] = ctx.Tr("auth.oauth_callback_unable_auto_reg", linkAccountData.GothUser.Provider, strings.Join(missingFields, ","))
+	}
+
+	uname, err := extractUserNameFromOAuth2(&linkAccountData.GothUser)
+	if err != nil {
+		ctx.ServerError("UserSignIn", err)
+		return
+	}
+	email := linkAccountData.GothUser.Email
 	ctx.Data["user_name"] = uname
 	ctx.Data["email"] = email
 
-	if len(email) != 0 {
+	if email != "" {
 		u, err := user_model.GetUserByEmail(ctx, email)
 		if err != nil && !user_model.IsErrUserNotExist(err) {
 			ctx.ServerError("UserSignIn", err)
@@ -67,7 +80,7 @@ func LinkAccount(ctx *context.Context) {
 		if u != nil {
 			ctx.Data["user_exists"] = true
 		}
-	} else if len(uname) != 0 {
+	} else if uname != "" {
 		u, err := user_model.GetUserByName(ctx, uname)
 		if err != nil && !user_model.IsErrUserNotExist(err) {
 			ctx.ServerError("UserSignIn", err)
@@ -81,30 +94,42 @@ func LinkAccount(ctx *context.Context) {
 	ctx.HTML(http.StatusOK, tplLinkAccount)
 }
 
+func handleSignInError(ctx *context.Context, userName string, ptrForm any, tmpl templates.TplName, invoker string, err error) {
+	if errors.Is(err, util.ErrNotExist) {
+		ctx.RenderWithErrDeprecated(ctx.Tr("form.username_password_incorrect"), tmpl, ptrForm)
+	} else if errors.Is(err, util.ErrInvalidArgument) {
+		ctx.Data["user_exists"] = true
+		ctx.RenderWithErrDeprecated(ctx.Tr("form.username_password_incorrect"), tmpl, ptrForm)
+	} else if user_model.IsErrUserProhibitLogin(err) {
+		ctx.Data["user_exists"] = true
+		log.Info("Failed authentication attempt for %s from %s: %v", userName, ctx.RemoteAddr(), err)
+		ctx.Data["Title"] = ctx.Tr("auth.prohibit_login")
+		ctx.HTML(http.StatusOK, "user/auth/prohibit_login")
+	} else if user_model.IsErrUserInactive(err) {
+		ctx.Data["user_exists"] = true
+		if setting.Service.RegisterEmailConfirm {
+			ctx.Data["Title"] = ctx.Tr("auth.active_your_account")
+			ctx.HTML(http.StatusOK, TplActivate)
+		} else {
+			log.Info("Failed authentication attempt for %s from %s: %v", userName, ctx.RemoteAddr(), err)
+			ctx.Data["Title"] = ctx.Tr("auth.prohibit_login")
+			ctx.HTML(http.StatusOK, "user/auth/prohibit_login")
+		}
+	} else {
+		ctx.ServerError(invoker, err)
+	}
+}
+
 // LinkAccountPostSignIn handle the coupling of external account with another account using signIn
 func LinkAccountPostSignIn(ctx *context.Context) {
 	signInForm := web.GetForm(ctx).(*forms.SignInForm)
-	ctx.Data["DisablePassword"] = !setting.Service.RequireExternalRegistrationPassword || setting.Service.AllowOnlyExternalRegistration
-	ctx.Data["Title"] = ctx.Tr("link_account")
-	ctx.Data["LinkAccountMode"] = true
+
 	ctx.Data["LinkAccountModeSignIn"] = true
-	ctx.Data["EnableCaptcha"] = setting.Service.EnableCaptcha && setting.Service.RequireExternalRegistrationCaptcha
-	ctx.Data["RecaptchaURL"] = setting.Service.RecaptchaURL
-	ctx.Data["Captcha"] = context.GetImageCaptcha()
-	ctx.Data["CaptchaType"] = setting.Service.CaptchaType
-	ctx.Data["RecaptchaSitekey"] = setting.Service.RecaptchaSitekey
-	ctx.Data["HcaptchaSitekey"] = setting.Service.HcaptchaSitekey
-	ctx.Data["McaptchaSitekey"] = setting.Service.McaptchaSitekey
-	ctx.Data["McaptchaURL"] = setting.Service.McaptchaURL
-	ctx.Data["DisableRegistration"] = setting.Service.DisableRegistration
-	ctx.Data["ShowRegistrationButton"] = false
 
-	// use this to set the right link into the signIn and signUp templates in the link_account template
-	ctx.Data["SignInLink"] = setting.AppSubURL + "/user/link_account_signin"
-	ctx.Data["SignUpLink"] = setting.AppSubURL + "/user/link_account_signup"
+	prepareLinkAccountPageData(ctx)
 
-	gothUser := ctx.Session.Get("linkAccountGothUser")
-	if gothUser == nil {
+	linkAccountData := oauth2GetLinkAccountData(ctx)
+	if linkAccountData == nil {
 		ctx.ServerError("UserSignIn", errors.New("not in LinkAccount session"))
 		return
 	}
@@ -114,34 +139,32 @@ func LinkAccountPostSignIn(ctx *context.Context) {
 		return
 	}
 
-	u, _, err := auth_service.UserSignIn(signInForm.UserName, signInForm.Password)
+	u, _, err := auth_service.UserSignIn(ctx, signInForm.UserName, signInForm.Password)
 	if err != nil {
-		if user_model.IsErrUserNotExist(err) {
-			ctx.Data["user_exists"] = true
-			ctx.RenderWithErr(ctx.Tr("form.username_password_incorrect"), tplLinkAccount, &signInForm)
-		} else {
-			ctx.ServerError("UserLinkAccount", err)
-		}
+		handleSignInError(ctx, signInForm.UserName, &signInForm, tplLinkAccount, "UserLinkAccount", err)
 		return
 	}
 
-	linkAccount(ctx, u, gothUser.(goth.User), signInForm.Remember)
+	oauth2LinkAccount(ctx, u, linkAccountData, signInForm.Remember)
 }
 
-func linkAccount(ctx *context.Context, u *user_model.User, gothUser goth.User, remember bool) {
-	updateAvatarIfNeed(gothUser.AvatarURL, u)
+func oauth2LinkAccount(ctx *context.Context, u *user_model.User, linkAccountData *LinkAccountData, remember bool) {
+	oauth2SignInSync(ctx, linkAccountData.AuthSourceID, u, linkAccountData.GothUser)
+	if ctx.Written() {
+		return
+	}
 
 	// If this user is enrolled in 2FA, we can't sign the user in just yet.
 	// Instead, redirect them to the 2FA authentication page.
 	// We deliberately ignore the skip local 2fa setting here because we are linking to a previous user here
-	_, err := auth.GetTwoFactorByUID(u.ID)
+	_, err := auth.GetTwoFactorByUID(ctx, u.ID)
 	if err != nil {
 		if !auth.IsErrTwoFactorNotEnrolled(err) {
 			ctx.ServerError("UserLinkAccount", err)
 			return
 		}
 
-		err = externalaccount.LinkAccountToUser(u, gothUser)
+		err = externalaccount.LinkAccountToUser(ctx, linkAccountData.AuthSourceID, u, linkAccountData.GothUser)
 		if err != nil {
 			ctx.ServerError("UserLinkAccount", err)
 			return
@@ -151,7 +174,7 @@ func linkAccount(ctx *context.Context, u *user_model.User, gothUser goth.User, r
 		return
 	}
 
-	if err := updateSession(ctx, nil, map[string]interface{}{
+	if err := updateSession(ctx, nil, map[string]any{
 		// User needs to use 2FA, save data and redirect to 2FA page.
 		"twofaUid":      u.ID,
 		"twofaRemember": remember,
@@ -162,7 +185,7 @@ func linkAccount(ctx *context.Context, u *user_model.User, gothUser goth.User, r
 	}
 
 	// If WebAuthn is enrolled -> Redirect to WebAuthn instead
-	regs, err := auth.GetWebAuthnCredentialsByUID(u.ID)
+	regs, err := auth.GetWebAuthnCredentialsByUID(ctx, u.ID)
 	if err == nil && len(regs) > 0 {
 		ctx.Redirect(setting.AppSubURL + "/user/webauthn")
 		return
@@ -174,45 +197,23 @@ func linkAccount(ctx *context.Context, u *user_model.User, gothUser goth.User, r
 // LinkAccountPostRegister handle the creation of a new account for an external account using signUp
 func LinkAccountPostRegister(ctx *context.Context) {
 	form := web.GetForm(ctx).(*forms.RegisterForm)
-	// TODO Make insecure passwords optional for local accounts also,
-	//      once email-based Second-Factor Auth is available
-	ctx.Data["DisablePassword"] = !setting.Service.RequireExternalRegistrationPassword || setting.Service.AllowOnlyExternalRegistration
-	ctx.Data["Title"] = ctx.Tr("link_account")
-	ctx.Data["LinkAccountMode"] = true
+
 	ctx.Data["LinkAccountModeRegister"] = true
-	ctx.Data["EnableCaptcha"] = setting.Service.EnableCaptcha && setting.Service.RequireExternalRegistrationCaptcha
-	ctx.Data["RecaptchaURL"] = setting.Service.RecaptchaURL
-	ctx.Data["Captcha"] = context.GetImageCaptcha()
-	ctx.Data["CaptchaType"] = setting.Service.CaptchaType
-	ctx.Data["RecaptchaSitekey"] = setting.Service.RecaptchaSitekey
-	ctx.Data["HcaptchaSitekey"] = setting.Service.HcaptchaSitekey
-	ctx.Data["McaptchaSitekey"] = setting.Service.McaptchaSitekey
-	ctx.Data["McaptchaURL"] = setting.Service.McaptchaURL
-	ctx.Data["DisableRegistration"] = setting.Service.DisableRegistration
-	ctx.Data["ShowRegistrationButton"] = false
 
-	// use this to set the right link into the signIn and signUp templates in the link_account template
-	ctx.Data["SignInLink"] = setting.AppSubURL + "/user/link_account_signin"
-	ctx.Data["SignUpLink"] = setting.AppSubURL + "/user/link_account_signup"
+	prepareLinkAccountPageData(ctx)
 
-	gothUserInterface := ctx.Session.Get("linkAccountGothUser")
-	if gothUserInterface == nil {
+	linkAccountData := oauth2GetLinkAccountData(ctx)
+	if linkAccountData == nil {
 		ctx.ServerError("UserSignUp", errors.New("not in LinkAccount session"))
 		return
 	}
-	gothUser, ok := gothUserInterface.(goth.User)
-	if !ok {
-		ctx.ServerError("UserSignUp", fmt.Errorf("session linkAccountGothUser type is %t but not goth.User", gothUserInterface))
-		return
-	}
-
 	if ctx.HasError() {
 		ctx.HTML(http.StatusOK, tplLinkAccount)
 		return
 	}
 
 	if setting.Service.DisableRegistration || setting.Service.AllowOnlyInternalRegistration {
-		ctx.Error(http.StatusForbidden)
+		ctx.HTTPError(http.StatusForbidden)
 		return
 	}
 
@@ -224,7 +225,7 @@ func LinkAccountPostRegister(ctx *context.Context) {
 	}
 
 	if !form.IsEmailDomainAllowed() {
-		ctx.RenderWithErr(ctx.Tr("auth.email_domain_blacklisted"), tplLinkAccount, &form)
+		ctx.RenderWithErrDeprecated(ctx.Tr("auth.email_domain_blacklisted"), tplLinkAccount, &form)
 		return
 	}
 
@@ -238,20 +239,14 @@ func LinkAccountPostRegister(ctx *context.Context) {
 	} else {
 		if (len(strings.TrimSpace(form.Password)) > 0 || len(strings.TrimSpace(form.Retype)) > 0) && form.Password != form.Retype {
 			ctx.Data["Err_Password"] = true
-			ctx.RenderWithErr(ctx.Tr("form.password_not_match"), tplLinkAccount, &form)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.password_not_match"), tplLinkAccount, &form)
 			return
 		}
 		if len(strings.TrimSpace(form.Password)) > 0 && len(form.Password) < setting.MinPasswordLength {
 			ctx.Data["Err_Password"] = true
-			ctx.RenderWithErr(ctx.Tr("auth.password_too_short", setting.MinPasswordLength), tplLinkAccount, &form)
+			ctx.RenderWithErrDeprecated(ctx.Tr("auth.password_too_short", setting.MinPasswordLength), tplLinkAccount, &form)
 			return
 		}
-	}
-
-	authSource, err := auth.GetActiveOAuth2SourceByName(gothUser.Provider)
-	if err != nil {
-		ctx.ServerError("CreateUser", err)
-		return
 	}
 
 	u := &user_model.User{
@@ -259,20 +254,33 @@ func LinkAccountPostRegister(ctx *context.Context) {
 		Email:       form.Email,
 		Passwd:      form.Password,
 		LoginType:   auth.OAuth2,
-		LoginSource: authSource.ID,
-		LoginName:   gothUser.UserID,
+		LoginSource: linkAccountData.AuthSourceID,
+		LoginName:   linkAccountData.GothUser.UserID,
 	}
 
-	if !createAndHandleCreatedUser(ctx, tplLinkAccount, form, u, nil, &gothUser, false) {
+	if !createAndHandleCreatedUser(ctx, tplLinkAccount, form, u, nil, linkAccountData) {
 		// error already handled
 		return
 	}
 
+	authSource, err := auth.GetSourceByID(ctx, linkAccountData.AuthSourceID)
+	if err != nil {
+		ctx.ServerError("GetSourceByID", err)
+		return
+	}
 	source := authSource.Cfg.(*oauth2.Source)
-	if err := syncGroupsToTeams(ctx, source, &gothUser, u); err != nil {
+	if err := syncGroupsToTeams(ctx, source, &linkAccountData.GothUser, u); err != nil {
 		ctx.ServerError("SyncGroupsToTeams", err)
 		return
 	}
 
 	handleSignIn(ctx, u, false)
+}
+
+func linkAccountFromContext(ctx *context.Context, user *user_model.User) error {
+	linkAccountData := oauth2GetLinkAccountData(ctx)
+	if linkAccountData == nil {
+		return errors.New("not in LinkAccount session")
+	}
+	return externalaccount.LinkAccountToUser(ctx, linkAccountData.AuthSourceID, user, linkAccountData.GothUser)
 }

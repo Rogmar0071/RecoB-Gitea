@@ -4,259 +4,218 @@
 package templates
 
 import (
+	"bufio"
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
+	"html/template"
+	"io"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	texttemplate "text/template"
 
+	"code.gitea.io/gitea/modules/assetfs"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/watcher"
-
-	"github.com/unrolled/render"
+	"code.gitea.io/gitea/modules/templates/scopedtmpl"
+	"code.gitea.io/gitea/modules/util"
 )
 
-var (
-	rendererKey interface{} = "templatesHtmlRenderer"
+type TemplateExecutor scopedtmpl.TemplateExecutor
 
-	templateError    = regexp.MustCompile(`^template: (.*):([0-9]+): (.*)`)
-	notDefinedError  = regexp.MustCompile(`^template: (.*):([0-9]+): function "(.*)" not defined`)
-	unexpectedError  = regexp.MustCompile(`^template: (.*):([0-9]+): unexpected "(.*)" in operand`)
-	expectedEndError = regexp.MustCompile(`^template: (.*):([0-9]+): expected end; found (.*)`)
-)
+type TplName string
 
-// HTMLRenderer returns the current html renderer for the context or creates and stores one within the context for future use
-func HTMLRenderer(ctx context.Context) (context.Context, *render.Render) {
-	rendererInterface := ctx.Value(rendererKey)
-	if rendererInterface != nil {
-		renderer, ok := rendererInterface.(*render.Render)
-		if ok {
-			return ctx, renderer
-		}
-	}
+type tmplRender struct {
+	templates atomic.Pointer[scopedtmpl.ScopedTemplate]
 
-	rendererType := "static"
-	if !setting.IsProd {
-		rendererType = "auto-reloading"
-	}
-	log.Log(1, log.DEBUG, "Creating "+rendererType+" HTML Renderer")
-
-	compilingTemplates := true
-	defer func() {
-		if !compilingTemplates {
-			return
-		}
-
-		panicked := recover()
-		if panicked == nil {
-			return
-		}
-
-		// OK try to handle the panic...
-		err, ok := panicked.(error)
-		if ok {
-			handlePanicError(err)
-		}
-		log.Fatal("PANIC: Unable to compile templates!\n%v\n\nStacktrace:\n%s", panicked, log.Stack(2))
-	}()
-
-	renderer := render.New(render.Options{
-		Extensions:                []string{".tmpl"},
-		Directory:                 "templates",
-		Funcs:                     NewFuncMap(),
-		Asset:                     GetAsset,
-		AssetNames:                GetTemplateAssetNames,
-		UseMutexLock:              !setting.IsProd,
-		IsDevelopment:             false,
-		DisableHTTPErrorRendering: true,
-	})
-	compilingTemplates = false
-	if !setting.IsProd {
-		watcher.CreateWatcher(ctx, "HTML Templates", &watcher.CreateWatcherOpts{
-			PathsCallback: walkTemplateFiles,
-			BetweenCallback: func() {
-				defer func() {
-					if err := recover(); err != nil {
-						log.Error("PANIC: %v\n%s", err, log.Stack(2))
-					}
-				}()
-				renderer.CompileTemplates()
-			},
-		})
-	}
-	return context.WithValue(ctx, rendererKey, renderer), renderer
+	collectTemplateNames func() ([]string, error)
+	readTemplateContent  func(name string) ([]byte, error)
 }
 
-func handlePanicError(err error) {
-	wrapFatal(handleNotDefinedPanicError(err))
-	wrapFatal(handleUnexpected(err))
-	wrapFatal(handleExpectedEnd(err))
-	wrapFatal(handleGenericTemplateError(err))
+func (h *tmplRender) Templates() *scopedtmpl.ScopedTemplate {
+	return h.templates.Load()
 }
 
-func wrapFatal(format string, args []interface{}) {
-	if format == "" {
+func (h *tmplRender) recompileTemplates(dummyFuncMap template.FuncMap) error {
+	tmpls := scopedtmpl.NewScopedTemplate()
+	tmpls.Funcs(dummyFuncMap)
+	names, err := h.collectTemplateNames()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		tmpl := tmpls.New(filepath.ToSlash(name))
+		buf, err := h.readTemplateContent(name)
+		if err != nil {
+			return err
+		}
+		if _, err = tmpl.Parse(string(buf)); err != nil {
+			return err
+		}
+	}
+	tmpls.Freeze()
+	h.templates.Store(tmpls)
+	return nil
+}
+
+func ReloadAllTemplates() error {
+	return errors.Join(PageRendererReload(), MailRendererReload())
+}
+
+func processStartupTemplateError(err error) {
+	if err == nil {
 		return
 	}
-	log.FatalWithSkip(1, format, args...)
+	if setting.IsProd || setting.IsInTesting {
+		// in prod mode, Gitea must have correct templates to run
+		log.Fatal("Gitea can't run with template errors: %v", err)
+	}
+	// in dev mode, do not need to really exit, because the template errors could be fixed by developer soon and the templates get reloaded
+	log.Error("There are template errors but Gitea continues to run in dev mode: %v", err)
 }
 
-func handleGenericTemplateError(err error) (string, []interface{}) {
-	groups := templateError.FindStringSubmatch(err.Error())
-	if len(groups) != 4 {
-		return "", nil
-	}
-
-	templateName, lineNumberStr, message := groups[1], groups[2], groups[3]
-
-	filename, assetErr := GetAssetFilename("templates/" + templateName + ".tmpl")
-	if assetErr != nil {
-		return "", nil
-	}
-
-	lineNumber, _ := strconv.Atoi(lineNumberStr)
-
-	line := GetLineFromTemplate(templateName, lineNumber, "", -1)
-
-	return "PANIC: Unable to compile templates!\n%s in template file %s at line %d:\n\n%s\nStacktrace:\n\n%s", []interface{}{message, filename, lineNumber, log.NewColoredValue(line, log.Reset), log.Stack(2)}
+type templateErrorPrettier struct {
+	assets *assetfs.LayeredFS
 }
 
-func handleNotDefinedPanicError(err error) (string, []interface{}) {
-	groups := notDefinedError.FindStringSubmatch(err.Error())
+var reGenericTemplateError = regexp.MustCompile(`^template: (.*):([0-9]+): (.*)`)
+
+func (p *templateErrorPrettier) handleGenericTemplateError(err error) string {
+	groups := reGenericTemplateError.FindStringSubmatch(err.Error())
 	if len(groups) != 4 {
-		return "", nil
+		return ""
 	}
-
-	templateName, lineNumberStr, functionName := groups[1], groups[2], groups[3]
-
-	functionName, _ = strconv.Unquote(`"` + functionName + `"`)
-
-	filename, assetErr := GetAssetFilename("templates/" + templateName + ".tmpl")
-	if assetErr != nil {
-		return "", nil
-	}
-
-	lineNumber, _ := strconv.Atoi(lineNumberStr)
-
-	line := GetLineFromTemplate(templateName, lineNumber, functionName, -1)
-
-	return "PANIC: Unable to compile templates!\nUndefined function %q in template file %s at line %d:\n\n%s", []interface{}{functionName, filename, lineNumber, log.NewColoredValue(line, log.Reset)}
+	tmplName, lineStr, message := groups[1], groups[2], groups[3]
+	return p.makeDetailedError(message, tmplName, lineStr, "", "")
 }
 
-func handleUnexpected(err error) (string, []interface{}) {
-	groups := unexpectedError.FindStringSubmatch(err.Error())
-	if len(groups) != 4 {
-		return "", nil
-	}
+var reFuncNotDefinedError = regexp.MustCompile(`^template: (.*):([0-9]+): (function "(.*)" not defined)`)
 
-	templateName, lineNumberStr, unexpected := groups[1], groups[2], groups[3]
+func (p *templateErrorPrettier) handleFuncNotDefinedError(err error) string {
+	groups := reFuncNotDefinedError.FindStringSubmatch(err.Error())
+	if len(groups) != 5 {
+		return ""
+	}
+	tmplName, lineStr, message, funcName := groups[1], groups[2], groups[3], groups[4]
+	funcName, _ = strconv.Unquote(`"` + funcName + `"`)
+	return p.makeDetailedError(message, tmplName, lineStr, "", funcName)
+}
+
+var reUnexpectedOperandError = regexp.MustCompile(`^template: (.*):([0-9]+): (unexpected "(.*)" in operand)`)
+
+func (p *templateErrorPrettier) handleUnexpectedOperandError(err error) string {
+	groups := reUnexpectedOperandError.FindStringSubmatch(err.Error())
+	if len(groups) != 5 {
+		return ""
+	}
+	tmplName, lineStr, message, unexpected := groups[1], groups[2], groups[3], groups[4]
 	unexpected, _ = strconv.Unquote(`"` + unexpected + `"`)
-
-	filename, assetErr := GetAssetFilename("templates/" + templateName + ".tmpl")
-	if assetErr != nil {
-		return "", nil
-	}
-
-	lineNumber, _ := strconv.Atoi(lineNumberStr)
-
-	line := GetLineFromTemplate(templateName, lineNumber, unexpected, -1)
-
-	return "PANIC: Unable to compile templates!\nUnexpected %q in template file %s at line %d:\n\n%s", []interface{}{unexpected, filename, lineNumber, log.NewColoredValue(line, log.Reset)}
+	return p.makeDetailedError(message, tmplName, lineStr, "", unexpected)
 }
 
-func handleExpectedEnd(err error) (string, []interface{}) {
-	groups := expectedEndError.FindStringSubmatch(err.Error())
-	if len(groups) != 4 {
-		return "", nil
+var reExpectedEndError = regexp.MustCompile(`^template: (.*):([0-9]+): (expected end; found (.*))`)
+
+func (p *templateErrorPrettier) handleExpectedEndError(err error) string {
+	groups := reExpectedEndError.FindStringSubmatch(err.Error())
+	if len(groups) != 5 {
+		return ""
 	}
-
-	templateName, lineNumberStr, unexpected := groups[1], groups[2], groups[3]
-
-	filename, assetErr := GetAssetFilename("templates/" + templateName + ".tmpl")
-	if assetErr != nil {
-		return "", nil
-	}
-
-	lineNumber, _ := strconv.Atoi(lineNumberStr)
-
-	line := GetLineFromTemplate(templateName, lineNumber, unexpected, -1)
-
-	return "PANIC: Unable to compile templates!\nMissing end with unexpected %q in template file %s at line %d:\n\n%s", []interface{}{unexpected, filename, lineNumber, log.NewColoredValue(line, log.Reset)}
+	tmplName, lineStr, message, unexpected := groups[1], groups[2], groups[3], groups[4]
+	return p.makeDetailedError(message, tmplName, lineStr, "", unexpected)
 }
 
-const dashSeparator = "----------------------------------------------------------------------\n"
+var (
+	reTemplateExecutingError    = regexp.MustCompile(`^template: (.*):([1-9][0-9]*):([1-9][0-9]*): (executing .*)`)
+	reTemplateExecutingErrorMsg = regexp.MustCompile(`^executing "(.*)" at <(.*)>: `)
+)
 
-// GetLineFromTemplate returns a line from a template with some context
-func GetLineFromTemplate(templateName string, targetLineNum int, target string, position int) string {
-	bs, err := GetAsset("templates/" + templateName + ".tmpl")
+func (p *templateErrorPrettier) handleTemplateRenderingError(err error) string {
+	if groups := reTemplateExecutingError.FindStringSubmatch(err.Error()); len(groups) > 0 {
+		tmplName, lineStr, posStr, msgPart := groups[1], groups[2], groups[3], groups[4]
+		target := ""
+		if groups = reTemplateExecutingErrorMsg.FindStringSubmatch(msgPart); len(groups) > 0 {
+			target = groups[2]
+		}
+		return p.makeDetailedError(msgPart, tmplName, lineStr, posStr, target)
+	} else if execErr, ok := err.(texttemplate.ExecError); ok {
+		layerName := p.assets.GetFileLayerName(execErr.Name + ".tmpl")
+		return fmt.Sprintf("asset from: %s, %s", layerName, err.Error())
+	}
+	return err.Error()
+}
+
+func HandleTemplateRenderingError(err error) string {
+	p := &templateErrorPrettier{assets: AssetFS()}
+	return p.handleTemplateRenderingError(err)
+}
+
+const dashSeparator = "----------------------------------------------------------------------"
+
+func (p *templateErrorPrettier) makeDetailedError(errMsg, tmplName, lineNumStr, posNumStr, target string) string {
+	code, layer, err := p.assets.ReadLayeredFile(tmplName + ".tmpl")
 	if err != nil {
-		return fmt.Sprintf("(unable to read template file: %v)", err)
+		return fmt.Sprintf("template error: %s, and unable to find template file %q", errMsg, tmplName)
 	}
-
-	sb := &strings.Builder{}
-
-	// Write the header
-	sb.WriteString(dashSeparator)
-
-	var lineBs []byte
-
-	// Iterate through the lines from the asset file to find the target line
-	for start, currentLineNum := 0, 1; currentLineNum <= targetLineNum && start < len(bs); currentLineNum++ {
-		// Find the next new line
-		end := bytes.IndexByte(bs[start:], '\n')
-
-		// adjust the end to be a direct pointer in to []byte
-		if end < 0 {
-			end = len(bs)
-		} else {
-			end += start
-		}
-
-		// set lineBs to the current line []byte
-		lineBs = bs[start:end]
-
-		// move start to after the current new line position
-		start = end + 1
-
-		// Write 2 preceding lines + the target line
-		if targetLineNum-currentLineNum < 3 {
-			_, _ = sb.Write(lineBs)
-			_ = sb.WriteByte('\n')
-		}
+	line, err := strconv.Atoi(lineNumStr)
+	if err != nil {
+		return fmt.Sprintf("template error: %s, unable to parse template %q line number %s", errMsg, tmplName, lineNumStr)
 	}
-
-	// If there is a provided target to look for in the line add a pointer to it
-	// e.g.                                                        ^^^^^^^
-	if target != "" {
-		targetPos := bytes.Index(lineBs, []byte(target))
-		if targetPos >= 0 {
-			position = targetPos
-		}
+	pos, err := strconv.Atoi(util.IfZero(posNumStr, "-1"))
+	if err != nil {
+		return fmt.Sprintf("template error: %s, unable to parse template %q pos number %s", errMsg, tmplName, posNumStr)
 	}
-	if position >= 0 {
-		// take the current line and replace preceding text with whitespace (except for tab)
-		for i := range lineBs[:position] {
-			if lineBs[i] != '\t' {
-				lineBs[i] = ' '
+	detail := extractErrorLine(code, line, pos, target)
+
+	var msg string
+	if pos >= 0 {
+		msg = fmt.Sprintf("template error: %s:%s:%d:%d : %s", layer, tmplName, line, pos, errMsg)
+	} else {
+		msg = fmt.Sprintf("template error: %s:%s:%d : %s", layer, tmplName, line, errMsg)
+	}
+	return msg + "\n" + dashSeparator + "\n" + detail + "\n" + dashSeparator
+}
+
+func extractErrorLine(code []byte, lineNum, posNum int, target string) string {
+	b := bufio.NewReader(bytes.NewReader(code))
+	var line []byte
+	var err error
+	for i := range lineNum {
+		if line, err = b.ReadBytes('\n'); err != nil {
+			if i == lineNum-1 && errors.Is(err, io.EOF) {
+				err = nil
 			}
+			break
 		}
-
-		// write the preceding "space"
-		_, _ = sb.Write(lineBs[:position])
-
-		// Now write the ^^ pointer
-		targetLen := len(target)
-		if targetLen == 0 {
-			targetLen = 1
-		}
-		_, _ = sb.WriteString(strings.Repeat("^", targetLen))
-		_ = sb.WriteByte('\n')
+	}
+	if err != nil {
+		return fmt.Sprintf("unable to find target line %d", lineNum)
 	}
 
-	// Finally write the footer
-	sb.WriteString(dashSeparator)
-
-	return sb.String()
+	line = bytes.TrimRight(line, "\r\n")
+	var indicatorLine []byte
+	targetBytes := []byte(target)
+	targetLen := len(targetBytes)
+	for i := 0; i < len(line); {
+		if posNum == -1 && target != "" && bytes.HasPrefix(line[i:], targetBytes) {
+			for j := 0; j < targetLen && i < len(line); j++ {
+				indicatorLine = append(indicatorLine, '^')
+				i++
+			}
+		} else if i == posNum {
+			indicatorLine = append(indicatorLine, '^')
+			i++
+		} else {
+			if line[i] == '\t' {
+				indicatorLine = append(indicatorLine, '\t')
+			} else {
+				indicatorLine = append(indicatorLine, ' ')
+			}
+			i++
+		}
+	}
+	// if the indicatorLine only contains spaces, trim it together
+	return strings.TrimRight(string(line)+"\n"+string(indicatorLine), " \t\r\n")
 }

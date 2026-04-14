@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,66 +21,57 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 		{
 			"empty", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "",
 			}, "",
 		},
 		{
 			"lang", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "test",
 			}, "lang: test",
 		},
 		{
 			"metatable", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "",
 			}, "gitea: table",
 		},
 		{
 			"metanone", &RenderConfig{
 				Meta: "none",
-				Icon: "table",
 				Lang: "",
 			}, "gitea: none",
 		},
 		{
 			"metadetails", &RenderConfig{
 				Meta: "details",
-				Icon: "table",
 				Lang: "",
 			}, "gitea: details",
 		},
 		{
 			"metawrong", &RenderConfig{
 				Meta: "details",
-				Icon: "table",
 				Lang: "",
 			}, "gitea: wrong",
 		},
 		{
 			"toc", &RenderConfig{
-				TOC:  true,
+				TOC:  "true",
 				Meta: "table",
-				Icon: "table",
 				Lang: "",
 			}, "include_toc: true",
 		},
 		{
 			"tocfalse", &RenderConfig{
-				TOC:  false,
+				TOC:  "false",
 				Meta: "table",
-				Icon: "table",
 				Lang: "",
 			}, "include_toc: false",
 		},
 		{
 			"toclang", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
-				TOC:  true,
+				TOC:  "true",
 				Lang: "testlang",
 			}, `
 				include_toc: true
@@ -88,7 +81,6 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 		{
 			"complexlang", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "testlang",
 			}, `
 				gitea:
@@ -98,7 +90,6 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 		{
 			"complexlang2", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "testlang",
 			}, `
 	lang: notright
@@ -109,7 +100,6 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 		{
 			"complexlang", &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "testlang",
 			}, `
 	gitea:
@@ -120,8 +110,7 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 			"complex2", &RenderConfig{
 				Lang: "two",
 				Meta: "table",
-				TOC:  true,
-				Icon: "smiley",
+				TOC:  "true",
 			}, `
 	lang: one
 	include_toc: true
@@ -137,26 +126,14 @@ func TestRenderConfig_UnmarshalYAML(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := &RenderConfig{
 				Meta: "table",
-				Icon: "table",
 				Lang: "",
 			}
-			if err := yaml.Unmarshal([]byte(strings.ReplaceAll(tt.args, "\t", "    ")), got); err != nil {
-				t.Errorf("RenderConfig.UnmarshalYAML() error = %v\n%q", err, tt.args)
-				return
-			}
+			err := yaml.Unmarshal([]byte(strings.ReplaceAll(tt.args, "\t", "    ")), got)
+			require.NoError(t, err)
 
-			if got.Meta != tt.expected.Meta {
-				t.Errorf("Meta Expected %s Got %s", tt.expected.Meta, got.Meta)
-			}
-			if got.Icon != tt.expected.Icon {
-				t.Errorf("Icon Expected %s Got %s", tt.expected.Icon, got.Icon)
-			}
-			if got.Lang != tt.expected.Lang {
-				t.Errorf("Lang Expected %s Got %s", tt.expected.Lang, got.Lang)
-			}
-			if got.TOC != tt.expected.TOC {
-				t.Errorf("TOC Expected %t Got %t", tt.expected.TOC, got.TOC)
-			}
+			assert.Equal(t, tt.expected.Meta, got.Meta)
+			assert.Equal(t, tt.expected.Lang, got.Lang)
+			assert.Equal(t, tt.expected.TOC, got.TOC)
 		})
 	}
 }

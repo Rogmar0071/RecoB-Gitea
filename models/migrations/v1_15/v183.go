@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_15 //nolint
+package v1_15
 
 import (
 	"fmt"
@@ -30,8 +30,8 @@ func CreatePushMirrorTable(x *xorm.Engine) error {
 		return err
 	}
 
-	if err := sess.Sync2(new(PushMirror)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := sess.Sync(new(PushMirror)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 
 	return sess.Commit()

@@ -10,39 +10,48 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 
 	"code.gitea.io/gitea/models/db"
 	packages_model "code.gitea.io/gitea/models/packages"
 	container_model "code.gitea.io/gitea/models/packages/container"
+	"code.gitea.io/gitea/modules/globallock"
 	"code.gitea.io/gitea/modules/log"
 	packages_module "code.gitea.io/gitea/modules/packages"
 	container_module "code.gitea.io/gitea/modules/packages/container"
 	"code.gitea.io/gitea/modules/util"
 	packages_service "code.gitea.io/gitea/services/packages"
-)
 
-var uploadVersionMutex sync.Mutex
+	"github.com/opencontainers/go-digest"
+)
 
 // saveAsPackageBlob creates a package blob from an upload
 // The uploaded blob gets stored in a special upload version to link them to the package/image
-func saveAsPackageBlob(hsr packages_module.HashedSizeReader, pci *packages_service.PackageCreationInfo) (*packages_model.PackageBlob, error) {
-	if err := packages_service.CheckSizeQuotaExceeded(db.DefaultContext, pci.Creator, pci.Owner, packages_model.TypeContainer, hsr.Size()); err != nil {
-		return nil, err
-	}
-
+// There will be concurrent uploading for the same blob, so it needs a global lock per blob hash
+func saveAsPackageBlob(ctx context.Context, hsr packages_module.HashedSizeReader, pci *packages_service.PackageCreationInfo) (*packages_model.PackageBlob, error) { //nolint:unparam //returned PackageBlob is never used
 	pb := packages_service.NewPackageBlob(hsr)
+	err := globallock.LockAndDo(ctx, "container-blob:"+pb.HashSHA256, func(ctx context.Context) error {
+		var err error
+		pb, err = saveAsPackageBlobInternal(ctx, hsr, pci, pb)
+		return err
+	})
+	return pb, err
+}
 
+func saveAsPackageBlobInternal(ctx context.Context, hsr packages_module.HashedSizeReader, pci *packages_service.PackageCreationInfo, pb *packages_model.PackageBlob) (*packages_model.PackageBlob, error) {
 	exists := false
 
 	contentStore := packages_module.NewContentStore()
 
-	uploadVersion, err := getOrCreateUploadVersion(&pci.PackageInfo)
+	uploadVersion, err := getOrCreateUploadVersion(ctx, &pci.PackageInfo)
 	if err != nil {
 		return nil, err
 	}
 
-	err = db.WithTx(db.DefaultContext, func(ctx context.Context) error {
+	err = db.WithTx(ctx, func(ctx context.Context) error {
+		if err := packages_service.CheckSizeQuotaExceeded(ctx, pci.Creator, pci.Owner, packages_model.TypeContainer, hsr.Size()); err != nil {
+			return err
+		}
+
 		pb, exists, err = packages_model.GetOrInsertBlob(ctx, pb)
 		if err != nil {
 			log.Error("Error inserting package blob: %v", err)
@@ -67,7 +76,7 @@ func saveAsPackageBlob(hsr packages_module.HashedSizeReader, pci *packages_servi
 		return createFileForBlob(ctx, uploadVersion, pb)
 	})
 	if err != nil {
-		if !exists {
+		if !exists && pb != nil { // pb can be nil if GetOrInsertBlob failed
 			if err := contentStore.Delete(packages_module.BlobHash256Key(pb.HashSHA256)); err != nil {
 				log.Error("Error deleting package blob from content store: %v", err)
 			}
@@ -79,24 +88,29 @@ func saveAsPackageBlob(hsr packages_module.HashedSizeReader, pci *packages_servi
 }
 
 // mountBlob mounts the specific blob to a different package
-func mountBlob(pi *packages_service.PackageInfo, pb *packages_model.PackageBlob) error {
-	uploadVersion, err := getOrCreateUploadVersion(pi)
+func mountBlob(ctx context.Context, pi *packages_service.PackageInfo, pb *packages_model.PackageBlob) error {
+	uploadVersion, err := getOrCreateUploadVersion(ctx, pi)
 	if err != nil {
 		return err
 	}
 
-	return db.WithTx(db.DefaultContext, func(ctx context.Context) error {
+	return db.WithTx(ctx, func(ctx context.Context) error {
 		return createFileForBlob(ctx, uploadVersion, pb)
 	})
 }
 
-func getOrCreateUploadVersion(pi *packages_service.PackageInfo) (*packages_model.PackageVersion, error) {
-	var uploadVersion *packages_model.PackageVersion
+func containerGlobalLockKey(piOwnerID int64, piName, usage string) string {
+	return fmt.Sprintf("pkg_%d_container_%s_%s", piOwnerID, strings.ToLower(piName), usage)
+}
 
-	// FIXME: Replace usage of mutex with database transaction
-	// https://github.com/go-gitea/gitea/pull/21862
-	uploadVersionMutex.Lock()
-	err := db.WithTx(db.DefaultContext, func(ctx context.Context) error {
+func getOrCreateUploadVersion(ctx context.Context, pi *packages_service.PackageInfo) (*packages_model.PackageVersion, error) {
+	releaser, err := globallock.Lock(ctx, containerGlobalLockKey(pi.Owner.ID, pi.Name, "package"))
+	if err != nil {
+		return nil, err
+	}
+	defer releaser()
+
+	return db.WithTx2(ctx, func(ctx context.Context) (*packages_model.PackageVersion, error) {
 		created := true
 		p := &packages_model.Package{
 			OwnerID:   pi.Owner.ID,
@@ -106,47 +120,40 @@ func getOrCreateUploadVersion(pi *packages_service.PackageInfo) (*packages_model
 		}
 		var err error
 		if p, err = packages_model.TryInsertPackage(ctx, p); err != nil {
-			if err == packages_model.ErrDuplicatePackage {
-				created = false
-			} else {
+			if !errors.Is(err, packages_model.ErrDuplicatePackage) {
 				log.Error("Error inserting package: %v", err)
-				return err
+				return nil, err
 			}
+			created = false
 		}
 
 		if created {
 			if _, err := packages_model.InsertProperty(ctx, packages_model.PropertyTypePackage, p.ID, container_module.PropertyRepository, strings.ToLower(pi.Owner.LowerName+"/"+pi.Name)); err != nil {
 				log.Error("Error setting package property: %v", err)
-				return err
+				return nil, err
 			}
 		}
 
 		pv := &packages_model.PackageVersion{
 			PackageID:    p.ID,
 			CreatorID:    pi.Owner.ID,
-			Version:      container_model.UploadVersion,
-			LowerVersion: container_model.UploadVersion,
+			Version:      container_module.UploadVersion,
+			LowerVersion: container_module.UploadVersion,
 			IsInternal:   true,
 			MetadataJSON: "null",
 		}
 		if pv, err = packages_model.GetOrInsertVersion(ctx, pv); err != nil {
-			if err != packages_model.ErrDuplicatePackageVersion {
+			if !errors.Is(err, packages_model.ErrDuplicatePackageVersion) {
 				log.Error("Error inserting package: %v", err)
-				return err
+				return nil, err
 			}
 		}
-
-		uploadVersion = pv
-
-		return nil
+		return pv, nil
 	})
-	uploadVersionMutex.Unlock()
-
-	return uploadVersion, err
 }
 
 func createFileForBlob(ctx context.Context, pv *packages_model.PackageVersion, pb *packages_model.PackageBlob) error {
-	filename := strings.ToLower(fmt.Sprintf("sha256_%s", pb.HashSHA256))
+	filename := strings.ToLower("sha256_" + pb.HashSHA256)
 
 	pf := &packages_model.PackageFile{
 		VersionID:    pv.ID,
@@ -157,7 +164,7 @@ func createFileForBlob(ctx context.Context, pv *packages_model.PackageVersion, p
 	}
 	var err error
 	if pf, err = packages_model.TryInsertFile(ctx, pf); err != nil {
-		if err == packages_model.ErrDuplicatePackageFile {
+		if errors.Is(err, packages_model.ErrDuplicatePackageFile) {
 			return nil
 		}
 		log.Error("Error inserting package file: %v", err)
@@ -172,12 +179,18 @@ func createFileForBlob(ctx context.Context, pv *packages_model.PackageVersion, p
 	return nil
 }
 
-func deleteBlob(ownerID int64, image, digest string) error {
-	return db.WithTx(db.DefaultContext, func(ctx context.Context) error {
+func deleteBlob(ctx context.Context, ownerID int64, image string, digest digest.Digest) error {
+	releaser, err := globallock.Lock(ctx, containerGlobalLockKey(ownerID, image, "blob"))
+	if err != nil {
+		return err
+	}
+	defer releaser()
+
+	return db.WithTx(ctx, func(ctx context.Context) error {
 		pfds, err := container_model.GetContainerBlobs(ctx, &container_model.BlobSearchOptions{
 			OwnerID: ownerID,
 			Image:   image,
-			Digest:  digest,
+			Digest:  string(digest),
 		})
 		if err != nil {
 			return err

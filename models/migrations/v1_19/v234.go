@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_19 //nolint
+package v1_19
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -24,5 +24,5 @@ func CreatePackageCleanupRuleTable(x *xorm.Engine) error {
 		UpdatedUnix   timeutil.TimeStamp `xorm:"updated NOT NULL DEFAULT 0"`
 	}
 
-	return x.Sync2(new(PackageCleanupRule))
+	return x.Sync(new(PackageCleanupRule))
 }

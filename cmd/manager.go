@@ -4,156 +4,151 @@
 package cmd
 
 import (
-	"fmt"
-	"net/http"
+	"context"
 	"os"
 	"time"
 
 	"code.gitea.io/gitea/modules/private"
 
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
-var (
-	// CmdManager represents the manager command
-	CmdManager = cli.Command{
+func newManagerCommand() *cli.Command {
+	return &cli.Command{
 		Name:        "manager",
 		Usage:       "Manage the running gitea process",
 		Description: "This is a command for managing the running gitea process",
-		Subcommands: []cli.Command{
-			subcmdShutdown,
-			subcmdRestart,
-			subcmdFlushQueues,
-			subcmdLogging,
-			subCmdProcesses,
+		Commands: []*cli.Command{
+			newShutdownCommand(),
+			newRestartCommand(),
+			newReloadTemplatesCommand(),
+			newFlushQueuesCommand(),
+			newLoggingCommand(),
+			newProcessesCommand(),
 		},
 	}
-	subcmdShutdown = cli.Command{
+}
+
+func newShutdownCommand() *cli.Command {
+	return &cli.Command{
 		Name:  "shutdown",
 		Usage: "Gracefully shutdown the running process",
 		Flags: []cli.Flag{
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name: "debug",
 			},
 		},
 		Action: runShutdown,
 	}
-	subcmdRestart = cli.Command{
+}
+
+func newRestartCommand() *cli.Command {
+	return &cli.Command{
 		Name:  "restart",
 		Usage: "Gracefully restart the running process - (not implemented for windows servers)",
 		Flags: []cli.Flag{
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name: "debug",
 			},
 		},
 		Action: runRestart,
 	}
-	subcmdFlushQueues = cli.Command{
+}
+
+func newReloadTemplatesCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "reload-templates",
+		Usage: "Reload template files in the running process",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name: "debug",
+			},
+		},
+		Action: runReloadTemplates,
+	}
+}
+
+func newFlushQueuesCommand() *cli.Command {
+	return &cli.Command{
 		Name:   "flush-queues",
 		Usage:  "Flush queues in the running process",
 		Action: runFlushQueues,
 		Flags: []cli.Flag{
-			cli.DurationFlag{
+			&cli.DurationFlag{
 				Name:  "timeout",
 				Value: 60 * time.Second,
 				Usage: "Timeout for the flushing process",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name:  "non-blocking",
 				Usage: "Set to true to not wait for flush to complete before returning",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name: "debug",
 			},
 		},
 	}
-	subCmdProcesses = cli.Command{
+}
+
+func newProcessesCommand() *cli.Command {
+	return &cli.Command{
 		Name:   "processes",
 		Usage:  "Display running processes within the current process",
 		Action: runProcesses,
 		Flags: []cli.Flag{
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name: "debug",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name:  "flat",
 				Usage: "Show processes as flat table rather than as tree",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name:  "no-system",
 				Usage: "Do not show system processes",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name:  "stacktraces",
 				Usage: "Show stacktraces",
 			},
-			cli.BoolFlag{
+			&cli.BoolFlag{
 				Name:  "json",
 				Usage: "Output as json",
 			},
-			cli.StringFlag{
+			&cli.StringFlag{
 				Name:  "cancel",
 				Usage: "Process PID to cancel. (Only available for non-system processes.)",
 			},
 		},
 	}
-)
-
-func runShutdown(c *cli.Context) error {
-	ctx, cancel := installSignals()
-	defer cancel()
-
-	setup("manager", c.Bool("debug"))
-	statusCode, msg := private.Shutdown(ctx)
-	switch statusCode {
-	case http.StatusInternalServerError:
-		return fail("InternalServerError", msg)
-	}
-
-	fmt.Fprintln(os.Stdout, msg)
-	return nil
 }
 
-func runRestart(c *cli.Context) error {
-	ctx, cancel := installSignals()
-	defer cancel()
-
-	setup("manager", c.Bool("debug"))
-	statusCode, msg := private.Restart(ctx)
-	switch statusCode {
-	case http.StatusInternalServerError:
-		return fail("InternalServerError", msg)
-	}
-
-	fmt.Fprintln(os.Stdout, msg)
-	return nil
+func runShutdown(ctx context.Context, c *cli.Command) error {
+	setup(ctx, c.Bool("debug"))
+	extra := private.Shutdown(ctx)
+	return handleCliResponseExtra(extra)
 }
 
-func runFlushQueues(c *cli.Context) error {
-	ctx, cancel := installSignals()
-	defer cancel()
-
-	setup("manager", c.Bool("debug"))
-	statusCode, msg := private.FlushQueues(ctx, c.Duration("timeout"), c.Bool("non-blocking"))
-	switch statusCode {
-	case http.StatusInternalServerError:
-		return fail("InternalServerError", msg)
-	}
-
-	fmt.Fprintln(os.Stdout, msg)
-	return nil
+func runRestart(ctx context.Context, c *cli.Command) error {
+	setup(ctx, c.Bool("debug"))
+	extra := private.Restart(ctx)
+	return handleCliResponseExtra(extra)
 }
 
-func runProcesses(c *cli.Context) error {
-	ctx, cancel := installSignals()
-	defer cancel()
+func runReloadTemplates(ctx context.Context, c *cli.Command) error {
+	setup(ctx, c.Bool("debug"))
+	extra := private.ReloadTemplates(ctx)
+	return handleCliResponseExtra(extra)
+}
 
-	setup("manager", c.Bool("debug"))
-	statusCode, msg := private.Processes(ctx, os.Stdout, c.Bool("flat"), c.Bool("no-system"), c.Bool("stacktraces"), c.Bool("json"), c.String("cancel"))
-	switch statusCode {
-	case http.StatusInternalServerError:
-		return fail("InternalServerError", msg)
-	}
+func runFlushQueues(ctx context.Context, c *cli.Command) error {
+	setup(ctx, c.Bool("debug"))
+	extra := private.FlushQueues(ctx, c.Duration("timeout"), c.Bool("non-blocking"))
+	return handleCliResponseExtra(extra)
+}
 
-	return nil
+func runProcesses(ctx context.Context, c *cli.Command) error {
+	setup(ctx, c.Bool("debug"))
+	extra := private.Processes(ctx, os.Stdout, c.Bool("flat"), c.Bool("no-system"), c.Bool("stacktraces"), c.Bool("json"), c.String("cancel"))
+	return handleCliResponseExtra(extra)
 }

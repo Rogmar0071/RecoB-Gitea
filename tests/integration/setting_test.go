@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/test"
 	"code.gitea.io/gitea/tests"
 
 	"github.com/stretchr/testify/assert"
@@ -20,21 +21,21 @@ func TestSettingShowUserEmailExplore(t *testing.T) {
 	setting.UI.ShowUserEmail = true
 
 	session := loginUser(t, "user2")
-	req := NewRequest(t, "GET", "/explore/users")
+	req := NewRequest(t, "GET", "/explore/users?sort=alphabetically")
 	resp := session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc := NewHTMLParser(t, resp.Body)
 	assert.Contains(t,
-		htmlDoc.doc.Find(".ui.user.list").Text(),
+		htmlDoc.doc.Find(".explore.users").Text(),
 		"user34@example.com",
 	)
 
 	setting.UI.ShowUserEmail = false
 
-	req = NewRequest(t, "GET", "/explore/users")
+	req = NewRequest(t, "GET", "/explore/users?sort=alphabetically")
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc = NewHTMLParser(t, resp.Body)
 	assert.NotContains(t,
-		htmlDoc.doc.Find(".ui.user.list").Text(),
+		htmlDoc.doc.Find(".explore.users").Text(),
 		"user34@example.com",
 	)
 
@@ -50,50 +51,49 @@ func TestSettingShowUserEmailProfile(t *testing.T) {
 
 	setting.UI.ShowUserEmail = true
 
-	// user1 can see self
+	// user1 can see own visible email
 	session := loginUser(t, "user1")
 	req := NewRequest(t, "GET", "/user1")
 	resp := session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc := NewHTMLParser(t, resp.Body)
 	assert.Contains(t, htmlDoc.doc.Find(".user.profile").Text(), "user1@example.com")
 
-	// user1 can not see user2
+	// user1 can not see user2's hidden email
 	req = NewRequest(t, "GET", "/user2")
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc = NewHTMLParser(t, resp.Body)
-	// Should not contain even if the user visits their own profile page
+	// Should only contain if the user visits their own profile page
 	assert.NotContains(t, htmlDoc.doc.Find(".user.profile").Text(), "user2@example.com")
 
-	// user2 can see user1
+	// user2 can see user1's visible email
 	session = loginUser(t, "user2")
 	req = NewRequest(t, "GET", "/user1")
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc = NewHTMLParser(t, resp.Body)
 	assert.Contains(t, htmlDoc.doc.Find(".user.profile").Text(), "user1@example.com")
 
-	// user2 can not see self
+	// user2 can see own hidden email
 	session = loginUser(t, "user2")
 	req = NewRequest(t, "GET", "/user2")
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc = NewHTMLParser(t, resp.Body)
-	assert.NotContains(t, htmlDoc.doc.Find(".user.profile").Text(), "user2@example.com")
+	assert.Contains(t, htmlDoc.doc.Find(".user.profile").Text(), "user2@example.com")
 
 	setting.UI.ShowUserEmail = false
 
-	// user1 can not see self
+	// user1 can see own (now hidden) email
 	session = loginUser(t, "user1")
 	req = NewRequest(t, "GET", "/user1")
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	htmlDoc = NewHTMLParser(t, resp.Body)
-	assert.NotContains(t, htmlDoc.doc.Find(".user.profile").Text(), "user1@example.com")
+	assert.Contains(t, htmlDoc.doc.Find(".user.profile").Text(), "user1@example.com")
 
 	setting.UI.ShowUserEmail = showUserEmail
 }
 
 func TestSettingLandingPage(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()
-
-	landingPage := setting.LandingPageURL
+	defer test.MockVariableValue(&setting.LandingPageURL)()
 
 	setting.LandingPageURL = setting.LandingPageHome
 	req := NewRequest(t, "GET", "/")
@@ -113,6 +113,4 @@ func TestSettingLandingPage(t *testing.T) {
 	req = NewRequest(t, "GET", "/")
 	resp = MakeRequest(t, req, http.StatusSeeOther)
 	assert.Equal(t, "/user/login", resp.Header().Get("Location"))
-
-	setting.LandingPageURL = landingPage
 }

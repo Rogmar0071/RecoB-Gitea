@@ -1,7 +1,7 @@
 // Copyright 2018 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_8 //nolint
+package v1_8
 
 import (
 	"fmt"
@@ -15,10 +15,10 @@ func AddPullRequestRebaseWithMerge(x *xorm.Engine) error {
 	// RepoUnit describes all units of a repository
 	type RepoUnit struct {
 		ID          int64
-		RepoID      int64                  `xorm:"INDEX(s)"`
-		Type        int                    `xorm:"INDEX(s)"`
-		Config      map[string]interface{} `xorm:"JSON"`
-		CreatedUnix timeutil.TimeStamp     `xorm:"INDEX CREATED"`
+		RepoID      int64              `xorm:"INDEX(s)"`
+		Type        int                `xorm:"INDEX(s)"`
+		Config      map[string]any     `xorm:"JSON"`
+		CreatedUnix timeutil.TimeStamp `xorm:"INDEX CREATED"`
 	}
 
 	const (
@@ -46,7 +46,7 @@ func AddPullRequestRebaseWithMerge(x *xorm.Engine) error {
 	}
 	for _, unit := range units {
 		if unit.Config == nil {
-			unit.Config = make(map[string]interface{})
+			unit.Config = make(map[string]any)
 		}
 		// Allow the new merge style if all other merge styles are allowed
 		allowMergeRebase := true

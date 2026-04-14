@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_15 //nolint
+package v1_15
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -21,5 +21,5 @@ func CreateProtectedTagTable(x *xorm.Engine) error {
 		UpdatedUnix timeutil.TimeStamp `xorm:"updated"`
 	}
 
-	return x.Sync2(new(ProtectedTag))
+	return x.Sync(new(ProtectedTag))
 }

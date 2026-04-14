@@ -1,7 +1,7 @@
 // Copyright 2018 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_7 //nolint
+package v1_7
 
 import "xorm.io/xorm"
 
@@ -11,5 +11,5 @@ func AddApprovalWhitelistsToProtectedBranches(x *xorm.Engine) error {
 		ApprovalsWhitelistTeamIDs []int64 `xorm:"JSON TEXT"`
 		RequiredApprovals         int64   `xorm:"NOT NULL DEFAULT 0"`
 	}
-	return x.Sync2(new(ProtectedBranch))
+	return x.Sync(new(ProtectedBranch))
 }

@@ -5,14 +5,14 @@ package utils
 
 import (
 	"code.gitea.io/gitea/models/db"
-	"code.gitea.io/gitea/modules/context"
+	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/convert"
 )
 
 // GetListOptions returns list options using the page and limit parameters
 func GetListOptions(ctx *context.APIContext) db.ListOptions {
 	return db.ListOptions{
-		Page:     ctx.FormInt("page"),
+		Page:     max(ctx.FormInt("page"), 1),
 		PageSize: convert.ToCorrectPageSize(ctx.FormInt("limit")),
 	}
 }

@@ -15,6 +15,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestPermissionsAPI(t *testing.T) {
+	defer tests.PrepareTestEnv(t)()
+
+	t.Run("TokenNeeded", testTokenNeeded)
+	t.Run("WithOwnerUser", testWithOwnerUser)
+	t.Run("CanWriteUser", testCanWriteUser)
+	t.Run("AdminUser", testAdminUser)
+	t.Run("AdminCanNotCreateRepo", testAdminCanNotCreateRepo)
+	t.Run("CanReadUser", testCanReadUser)
+	t.Run("UnknownUser", testUnknownUser)
+	t.Run("UnknownOrganization", testUnknownOrganization)
+	t.Run("HiddenMemberPermissionsForbidden", testHiddenMemberPermissionsForbidden)
+	t.Run("PrivateOrgPermissionsNotFound", testPrivateOrgPermissionsNotFound)
+}
+
 type apiUserOrgPermTestCase struct {
 	LoginUser                       string
 	User                            string
@@ -22,20 +37,17 @@ type apiUserOrgPermTestCase struct {
 	ExpectedOrganizationPermissions api.OrganizationPermissions
 }
 
-func TestTokenNeeded(t *testing.T) {
-	defer tests.PrepareTestEnv(t)()
-
-	req := NewRequest(t, "GET", "/api/v1/users/user1/orgs/user6/permissions")
+func testTokenNeeded(t *testing.T) {
+	req := NewRequest(t, "GET", "/api/v1/users/user1/orgs/org6/permissions")
 	MakeRequest(t, req, http.StatusUnauthorized)
 }
 
 func sampleTest(t *testing.T, auoptc apiUserOrgPermTestCase) {
-	defer tests.PrepareTestEnv(t)()
-
 	session := loginUser(t, auoptc.LoginUser)
-	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadOrg)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadOrganization, auth_model.AccessTokenScopeReadUser)
 
-	req := NewRequest(t, "GET", fmt.Sprintf("/api/v1/users/%s/orgs/%s/permissions?token=%s", auoptc.User, auoptc.Organization, token))
+	req := NewRequest(t, "GET", fmt.Sprintf("/api/v1/users/%s/orgs/%s/permissions", auoptc.User, auoptc.Organization)).
+		AddTokenAuth(token)
 	resp := MakeRequest(t, req, http.StatusOK)
 
 	var apiOP api.OrganizationPermissions
@@ -47,11 +59,11 @@ func sampleTest(t *testing.T, auoptc apiUserOrgPermTestCase) {
 	assert.Equal(t, auoptc.ExpectedOrganizationPermissions.CanCreateRepository, apiOP.CanCreateRepository)
 }
 
-func TestWithOwnerUser(t *testing.T) {
+func testWithOwnerUser(t *testing.T) {
 	sampleTest(t, apiUserOrgPermTestCase{
 		LoginUser:    "user2",
 		User:         "user2",
-		Organization: "user3",
+		Organization: "org3",
 		ExpectedOrganizationPermissions: api.OrganizationPermissions{
 			IsOwner:             true,
 			IsAdmin:             true,
@@ -62,11 +74,11 @@ func TestWithOwnerUser(t *testing.T) {
 	})
 }
 
-func TestCanWriteUser(t *testing.T) {
+func testCanWriteUser(t *testing.T) {
 	sampleTest(t, apiUserOrgPermTestCase{
 		LoginUser:    "user4",
 		User:         "user4",
-		Organization: "user3",
+		Organization: "org3",
 		ExpectedOrganizationPermissions: api.OrganizationPermissions{
 			IsOwner:             false,
 			IsAdmin:             false,
@@ -77,11 +89,11 @@ func TestCanWriteUser(t *testing.T) {
 	})
 }
 
-func TestAdminUser(t *testing.T) {
+func testAdminUser(t *testing.T) {
 	sampleTest(t, apiUserOrgPermTestCase{
 		LoginUser:    "user1",
 		User:         "user28",
-		Organization: "user3",
+		Organization: "org3",
 		ExpectedOrganizationPermissions: api.OrganizationPermissions{
 			IsOwner:             false,
 			IsAdmin:             true,
@@ -92,11 +104,11 @@ func TestAdminUser(t *testing.T) {
 	})
 }
 
-func TestAdminCanNotCreateRepo(t *testing.T) {
+func testAdminCanNotCreateRepo(t *testing.T) {
 	sampleTest(t, apiUserOrgPermTestCase{
 		LoginUser:    "user1",
 		User:         "user28",
-		Organization: "user6",
+		Organization: "org6",
 		ExpectedOrganizationPermissions: api.OrganizationPermissions{
 			IsOwner:             false,
 			IsAdmin:             true,
@@ -107,7 +119,7 @@ func TestAdminCanNotCreateRepo(t *testing.T) {
 	})
 }
 
-func TestCanReadUser(t *testing.T) {
+func testCanReadUser(t *testing.T) {
 	sampleTest(t, apiUserOrgPermTestCase{
 		LoginUser:    "user1",
 		User:         "user24",
@@ -122,29 +134,62 @@ func TestCanReadUser(t *testing.T) {
 	})
 }
 
-func TestUnknowUser(t *testing.T) {
-	defer tests.PrepareTestEnv(t)()
-
+func testUnknownUser(t *testing.T) {
 	session := loginUser(t, "user1")
-	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadOrg)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadUser, auth_model.AccessTokenScopeReadOrganization)
 
-	req := NewRequest(t, "GET", fmt.Sprintf("/api/v1/users/unknow/orgs/org25/permissions?token=%s", token))
+	req := NewRequest(t, "GET", "/api/v1/users/unknown/orgs/org25/permissions").
+		AddTokenAuth(token)
 	resp := MakeRequest(t, req, http.StatusNotFound)
 
 	var apiError api.APIError
 	DecodeJSON(t, resp, &apiError)
-	assert.Equal(t, "user redirect does not exist [name: unknow]", apiError.Message)
+	assert.Equal(t, "user redirect does not exist [name: unknown]", apiError.Message)
 }
 
-func TestUnknowOrganization(t *testing.T) {
-	defer tests.PrepareTestEnv(t)()
-
+func testUnknownOrganization(t *testing.T) {
 	session := loginUser(t, "user1")
-	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadOrg)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadUser, auth_model.AccessTokenScopeReadOrganization)
 
-	req := NewRequest(t, "GET", fmt.Sprintf("/api/v1/users/user1/orgs/unknow/permissions?token=%s", token))
+	req := NewRequest(t, "GET", "/api/v1/users/user1/orgs/unknown/permissions").
+		AddTokenAuth(token)
 	resp := MakeRequest(t, req, http.StatusNotFound)
 	var apiError api.APIError
 	DecodeJSON(t, resp, &apiError)
 	assert.Equal(t, "GetUserByName", apiError.Message)
+}
+
+func testHiddenMemberPermissionsForbidden(t *testing.T) {
+	session := loginUser(t, "user8")
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadUser, auth_model.AccessTokenScopeReadOrganization)
+
+	req := NewRequest(t, "GET", "/api/v1/users/user5/orgs/privated_org/permissions").
+		AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusNotFound)
+
+	adminSession := loginUser(t, "user1")
+	adminToken := getTokenForLoggedInUser(t, adminSession, auth_model.AccessTokenScopeReadUser, auth_model.AccessTokenScopeReadOrganization)
+
+	adminReq := NewRequest(t, "GET", "/api/v1/users/user5/orgs/privated_org/permissions").
+		AddTokenAuth(adminToken)
+	resp := MakeRequest(t, adminReq, http.StatusOK)
+
+	var apiOP api.OrganizationPermissions
+	DecodeJSON(t, resp, &apiOP)
+	assert.Equal(t, api.OrganizationPermissions{
+		IsOwner:             false,
+		IsAdmin:             false,
+		CanWrite:            true,
+		CanRead:             true,
+		CanCreateRepository: true,
+	}, apiOP)
+}
+
+func testPrivateOrgPermissionsNotFound(t *testing.T) {
+	session := loginUser(t, "user8")
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadUser, auth_model.AccessTokenScopeReadOrganization)
+
+	req := NewRequest(t, "GET", "/api/v1/users/user5/orgs/privated_org/permissions").
+		AddTokenAuth(token)
+	MakeRequest(t, req, http.StatusNotFound)
 }

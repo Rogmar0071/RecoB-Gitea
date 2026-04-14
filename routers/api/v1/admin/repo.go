@@ -4,10 +4,10 @@
 package admin
 
 import (
-	"code.gitea.io/gitea/modules/context"
 	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/web"
 	"code.gitea.io/gitea/routers/api/v1/repo"
+	"code.gitea.io/gitea/services/context"
 )
 
 // CreateRepo api for creating a repository
@@ -22,7 +22,7 @@ func CreateRepo(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of the user. This user will own the created repository
+	//   description: username of the user who will own the created repository
 	//   type: string
 	//   required: true
 	// - name: repository

@@ -4,31 +4,23 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 
 	"code.gitea.io/gitea/modules/private"
 	"code.gitea.io/gitea/modules/setting"
 
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
-func runSendMail(c *cli.Context) error {
-	ctx, cancel := installSignals()
-	defer cancel()
-
-	setting.InitProviderFromExistingFile()
-	setting.LoadCommonSettings()
-
-	if err := argsSet(c, "title"); err != nil {
-		return err
-	}
+func runSendMail(ctx context.Context, c *cli.Command) error {
+	setting.MustInstalled()
 
 	subject := c.String("title")
-	confirmSkiped := c.Bool("force")
+	confirmSkipped := c.Bool("force")
 	body := c.String("content")
 
-	if !confirmSkiped {
+	if !confirmSkipped {
 		if len(body) == 0 {
 			fmt.Print("warning: Content is empty")
 		}
@@ -43,13 +35,10 @@ func runSendMail(c *cli.Context) error {
 		}
 	}
 
-	status, message := private.SendEmail(ctx, subject, body, nil)
-	if status != http.StatusOK {
-		fmt.Printf("error: %s\n", message)
-		return nil
+	respText, extra := private.SendEmail(ctx, subject, body, nil)
+	if extra.HasError() {
+		return handleCliResponseExtra(extra)
 	}
-
-	fmt.Printf("Success: %s\n", message)
-
+	_, _ = fmt.Printf("Sent %s email(s) to all users\n", respText.Text)
 	return nil
 }

@@ -1,7 +1,7 @@
 // Copyright 2018 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_6 //nolint
+package v1_6
 
 import (
 	"fmt"
@@ -27,8 +27,8 @@ func AddScratchHash(x *xorm.Engine) error {
 		UpdatedUnix      timeutil.TimeStamp `xorm:"INDEX updated"`
 	}
 
-	if err := x.Sync2(new(TwoFactor)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(TwoFactor)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 
 	sess := x.NewSession()
@@ -61,7 +61,6 @@ func AddScratchHash(x *xorm.Engine) error {
 			if _, err := sess.ID(tfa.ID).Cols("scratch_salt, scratch_hash").Update(tfa); err != nil {
 				return fmt.Errorf("couldn't add in scratch_hash and scratch_salt: %w", err)
 			}
-
 		}
 	}
 

@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_17 //nolint
+package v1_17
 
 import (
 	"xorm.io/xorm"
@@ -13,5 +13,5 @@ func AddAllowMaintainerEdit(x *xorm.Engine) error {
 		AllowMaintainerEdit bool `xorm:"NOT NULL DEFAULT false"`
 	}
 
-	return x.Sync2(new(PullRequest))
+	return x.Sync(new(PullRequest))
 }

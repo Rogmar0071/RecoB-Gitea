@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"fmt"
@@ -14,8 +14,8 @@ func AddColorColToProjectBoard(x *xorm.Engine) error {
 		Color string `xorm:"VARCHAR(7)"`
 	}
 
-	if err := x.Sync2(new(ProjectBoard)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(ProjectBoard)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 	return nil
 }

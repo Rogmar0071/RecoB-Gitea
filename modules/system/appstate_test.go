@@ -4,7 +4,6 @@
 package system
 
 import (
-	"path/filepath"
 	"testing"
 
 	"code.gitea.io/gitea/models/unittest"
@@ -13,10 +12,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	unittest.MainTest(m, &unittest.TestOptions{
-		GiteaRootPath: filepath.Join("..", ".."),
-		FixtureFiles:  []string{""}, // load nothing
-	})
+	unittest.MainTest(m, &unittest.TestOptions{FixtureFiles: []string{ /* load nothing */ }})
 }
 
 type testItem1 struct {
@@ -37,30 +33,28 @@ func (*testItem2) Name() string {
 }
 
 func TestAppStateDB(t *testing.T) {
-	assert.NoError(t, unittest.PrepareTestDatabase())
-
 	as := &DBStore{}
 
 	item1 := new(testItem1)
-	assert.NoError(t, as.Get(item1))
-	assert.Equal(t, "", item1.Val1)
-	assert.EqualValues(t, 0, item1.Val2)
+	assert.NoError(t, as.Get(t.Context(), item1))
+	assert.Empty(t, item1.Val1)
+	assert.Equal(t, 0, item1.Val2)
 
 	item1 = new(testItem1)
 	item1.Val1 = "a"
 	item1.Val2 = 2
-	assert.NoError(t, as.Set(item1))
+	assert.NoError(t, as.Set(t.Context(), item1))
 
 	item2 := new(testItem2)
 	item2.K = "V"
-	assert.NoError(t, as.Set(item2))
+	assert.NoError(t, as.Set(t.Context(), item2))
 
 	item1 = new(testItem1)
-	assert.NoError(t, as.Get(item1))
+	assert.NoError(t, as.Get(t.Context(), item1))
 	assert.Equal(t, "a", item1.Val1)
-	assert.EqualValues(t, 2, item1.Val2)
+	assert.Equal(t, 2, item1.Val2)
 
 	item2 = new(testItem2)
-	assert.NoError(t, as.Get(item2))
+	assert.NoError(t, as.Get(t.Context(), item2))
 	assert.Equal(t, "V", item2.K)
 }

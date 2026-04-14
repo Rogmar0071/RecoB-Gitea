@@ -14,7 +14,7 @@ import (
 
 func TestRepository_GetBlob_Found(t *testing.T) {
 	repoPath := filepath.Join(testReposDir, "repo1_bare")
-	r, err := openRepositoryWithDefaultContext(repoPath)
+	r, err := OpenRepository(t.Context(), repoPath)
 	assert.NoError(t, err)
 	defer r.Close()
 
@@ -42,7 +42,7 @@ func TestRepository_GetBlob_Found(t *testing.T) {
 
 func TestRepository_GetBlob_NotExist(t *testing.T) {
 	repoPath := filepath.Join(testReposDir, "repo1_bare")
-	r, err := openRepositoryWithDefaultContext(repoPath)
+	r, err := OpenRepository(t.Context(), repoPath)
 	assert.NoError(t, err)
 	defer r.Close()
 
@@ -56,12 +56,12 @@ func TestRepository_GetBlob_NotExist(t *testing.T) {
 
 func TestRepository_GetBlob_NoId(t *testing.T) {
 	repoPath := filepath.Join(testReposDir, "repo1_bare")
-	r, err := openRepositoryWithDefaultContext(repoPath)
+	r, err := OpenRepository(t.Context(), repoPath)
 	assert.NoError(t, err)
 	defer r.Close()
 
 	testCase := ""
-	testError := fmt.Errorf("Length must be 40: %s", testCase)
+	testError := fmt.Errorf("length %d has no matched object format: %s", len(testCase), testCase)
 
 	blob, err := r.GetBlob(testCase)
 	assert.Nil(t, blob)

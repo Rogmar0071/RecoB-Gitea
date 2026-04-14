@@ -11,7 +11,6 @@ import (
 
 	activities_model "code.gitea.io/gitea/models/activities"
 	auth_model "code.gitea.io/gitea/models/auth"
-	"code.gitea.io/gitea/models/db"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
@@ -58,24 +57,27 @@ func TestEventSourceManagerRun(t *testing.T) {
 	user2 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
 	repo1 := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})
 	thread5 := unittest.AssertExistsAndLoadBean(t, &activities_model.Notification{ID: 5})
-	assert.NoError(t, thread5.LoadAttributes(db.DefaultContext))
+	assert.NoError(t, thread5.LoadAttributes(t.Context()))
 	session := loginUser(t, user2.Name)
-	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeNotification)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeWriteNotification, auth_model.AccessTokenScopeWriteRepository)
 
 	var apiNL []api.NotificationThread
 
 	// -- mark notifications as read --
-	req := NewRequest(t, "GET", fmt.Sprintf("/api/v1/notifications?status-types=unread&token=%s", token))
+	req := NewRequest(t, "GET", "/api/v1/notifications?status-types=unread").
+		AddTokenAuth(token)
 	resp := session.MakeRequest(t, req, http.StatusOK)
 
 	DecodeJSON(t, resp, &apiNL)
 	assert.Len(t, apiNL, 2)
 
 	lastReadAt := "2000-01-01T00%3A50%3A01%2B00%3A00" // 946687801 <- only Notification 4 is in this filter ...
-	req = NewRequest(t, "PUT", fmt.Sprintf("/api/v1/repos/%s/%s/notifications?last_read_at=%s&token=%s", user2.Name, repo1.Name, lastReadAt, token))
+	req = NewRequest(t, "PUT", fmt.Sprintf("/api/v1/repos/%s/%s/notifications?last_read_at=%s", user2.Name, repo1.Name, lastReadAt)).
+		AddTokenAuth(token)
 	session.MakeRequest(t, req, http.StatusResetContent)
 
-	req = NewRequest(t, "GET", fmt.Sprintf("/api/v1/notifications?token=%s&status-types=unread", token))
+	req = NewRequest(t, "GET", "/api/v1/notifications?status-types=unread").
+		AddTokenAuth(token)
 	resp = session.MakeRequest(t, req, http.StatusOK)
 	DecodeJSON(t, resp, &apiNL)
 	assert.Len(t, apiNL, 1)

@@ -7,24 +7,17 @@ package git
 
 import (
 	"io"
-	"math"
 	"strings"
+
+	"code.gitea.io/gitea/modules/git/gitcmd"
 )
 
 // Tree represents a flat directory listing.
 type Tree struct {
-	ID         SHA1
-	ResolvedID SHA1
-	repo       *Repository
-
-	// parent tree
-	ptree *Tree
+	TreeCommon
 
 	entries       Entries
 	entriesParsed bool
-
-	entriesRecursive       Entries
-	entriesRecursiveParsed bool
 }
 
 // ListEntries returns all entries of current tree.
@@ -34,27 +27,29 @@ func (t *Tree) ListEntries() (Entries, error) {
 	}
 
 	if t.repo != nil {
-		wr, rd, cancel := t.repo.CatFileBatch(t.repo.Ctx)
-		defer cancel()
-
-		_, _ = wr.Write([]byte(t.ID.String() + "\n"))
-		_, typ, sz, err := ReadBatchLine(rd)
+		batch, cancel, err := t.repo.CatFileBatch(t.repo.Ctx)
 		if err != nil {
 			return nil, err
 		}
-		if typ == "commit" {
-			treeID, err := ReadTreeID(rd, sz)
+		defer cancel()
+
+		info, rd, err := batch.QueryContent(t.ID.String())
+		if err != nil {
+			return nil, err
+		}
+
+		if info.Type == "commit" {
+			treeID, err := ReadTreeID(rd, info.Size)
 			if err != nil && err != io.EOF {
 				return nil, err
 			}
-			_, _ = wr.Write([]byte(treeID + "\n"))
-			_, typ, sz, err = ReadBatchLine(rd)
+			info, rd, err = batch.QueryContent(treeID)
 			if err != nil {
 				return nil, err
 			}
 		}
-		if typ == "tree" {
-			t.entries, err = catBatchParseTreeEntries(t, rd, sz)
+		if info.Type == "tree" {
+			t.entries, err = catBatchParseTreeEntries(t.ID.Type(), t, rd, info.Size)
 			if err != nil {
 				return nil, err
 			}
@@ -63,25 +58,14 @@ func (t *Tree) ListEntries() (Entries, error) {
 		}
 
 		// Not a tree just use ls-tree instead
-		for sz > math.MaxInt32 {
-			discarded, err := rd.Discard(math.MaxInt32)
-			sz -= int64(discarded)
-			if err != nil {
-				return nil, err
-			}
-		}
-		for sz > 0 {
-			discarded, err := rd.Discard(int(sz))
-			sz -= int64(discarded)
-			if err != nil {
-				return nil, err
-			}
+		if err := DiscardFull(rd, info.Size+1); err != nil {
+			return nil, err
 		}
 	}
 
-	stdout, _, runErr := NewCommand(t.repo.Ctx, "ls-tree", "-l").AddDynamicArguments(t.ID.String()).RunStdBytes(&RunOpts{Dir: t.repo.Path})
+	stdout, _, runErr := gitcmd.NewCommand("ls-tree", "-l").AddDynamicArguments(t.ID.String()).WithDir(t.repo.Path).RunStdBytes(t.repo.Ctx)
 	if runErr != nil {
-		if strings.Contains(runErr.Error(), "fatal: Not a valid object name") || strings.Contains(runErr.Error(), "fatal: not a tree object") {
+		if gitcmd.IsStdErrorNotValidObjectName(runErr) || strings.Contains(runErr.Error(), "fatal: not a tree object") {
 			return nil, ErrNotExist{
 				ID: t.ID.String(),
 			}
@@ -100,26 +84,19 @@ func (t *Tree) ListEntries() (Entries, error) {
 
 // listEntriesRecursive returns all entries of current tree recursively including all subtrees
 // extraArgs could be "-l" to get the size, which is slower
-func (t *Tree) listEntriesRecursive(extraArgs TrustedCmdArgs) (Entries, error) {
-	if t.entriesRecursiveParsed {
-		return t.entriesRecursive, nil
-	}
-
-	stdout, _, runErr := NewCommand(t.repo.Ctx, "ls-tree", "-t", "-r").
+func (t *Tree) listEntriesRecursive(extraArgs gitcmd.TrustedCmdArgs) (Entries, error) {
+	stdout, _, runErr := gitcmd.NewCommand("ls-tree", "-t", "-r").
 		AddArguments(extraArgs...).
 		AddDynamicArguments(t.ID.String()).
-		RunStdBytes(&RunOpts{Dir: t.repo.Path})
+		WithDir(t.repo.Path).
+		RunStdBytes(t.repo.Ctx)
 	if runErr != nil {
 		return nil, runErr
 	}
 
-	var err error
-	t.entriesRecursive, err = parseTreeEntries(stdout, t)
-	if err == nil {
-		t.entriesRecursiveParsed = true
-	}
-
-	return t.entriesRecursive, err
+	// FIXME: the "name" field is abused, here it is a full path
+	// FIXME: this ptree is not right, fortunately it isn't really used
+	return parseTreeEntries(stdout, t)
 }
 
 // ListEntriesRecursiveFast returns all entries of current tree recursively including all subtrees, no size
@@ -129,5 +106,5 @@ func (t *Tree) ListEntriesRecursiveFast() (Entries, error) {
 
 // ListEntriesRecursiveWithSize returns all entries of current tree recursively including all subtrees, with size
 func (t *Tree) ListEntriesRecursiveWithSize() (Entries, error) {
-	return t.listEntriesRecursive(TrustedCmdArgs{"--long"})
+	return t.listEntriesRecursive(gitcmd.TrustedCmdArgs{"--long"})
 }

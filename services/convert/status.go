@@ -5,9 +5,11 @@ package convert
 
 import (
 	"context"
+	"net/url"
 
 	git_model "code.gitea.io/gitea/models/git"
 	user_model "code.gitea.io/gitea/models/user"
+	"code.gitea.io/gitea/modules/commitstatus"
 	api "code.gitea.io/gitea/modules/structs"
 )
 
@@ -32,26 +34,30 @@ func ToCommitStatus(ctx context.Context, status *git_model.CommitStatus) *api.Co
 	return apiStatus
 }
 
-// ToCombinedStatus converts List of CommitStatus to a CombinedStatus
-func ToCombinedStatus(ctx context.Context, statuses []*git_model.CommitStatus, repo *api.Repository) *api.CombinedStatus {
-	if len(statuses) == 0 {
-		return nil
+func ToCommitStatuses(ctx context.Context, statuses []*git_model.CommitStatus) []*api.CommitStatus {
+	apiStatuses := make([]*api.CommitStatus, len(statuses))
+	for i, status := range statuses {
+		apiStatuses[i] = ToCommitStatus(ctx, status)
 	}
+	return apiStatuses
+}
 
-	retStatus := &api.CombinedStatus{
-		SHA:        statuses[0].SHA,
+// ToCombinedStatus converts List of CommitStatus to a CombinedStatus
+func ToCombinedStatus(ctx context.Context, commitID string, statuses []*git_model.CommitStatus, repo *api.Repository) *api.CombinedStatus {
+	status := api.CombinedStatus{
+		SHA:        commitID,
 		TotalCount: len(statuses),
 		Repository: repo,
-		URL:        "",
+		CommitURL:  repo.URL + "/commits/" + url.PathEscape(commitID),
+		URL:        repo.URL + "/commits/" + url.PathEscape(commitID) + "/status",
 	}
 
-	retStatus.Statuses = make([]*api.CommitStatus, 0, len(statuses))
-	for _, status := range statuses {
-		retStatus.Statuses = append(retStatus.Statuses, ToCommitStatus(ctx, status))
-		if status.State.NoBetterThan(retStatus.State) {
-			retStatus.State = status.State
-		}
+	combinedStatus := git_model.CalcCommitStatus(statuses)
+	if combinedStatus != nil {
+		status.Statuses = ToCommitStatuses(ctx, statuses)
+		status.State = combinedStatus.State
+	} else {
+		status.State = commitstatus.CommitStatusPending
 	}
-
-	return retStatus
+	return &status
 }

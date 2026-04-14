@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import "xorm.io/xorm"
 
@@ -11,7 +11,7 @@ func AddStatusCheckColumnsForProtectedBranches(x *xorm.Engine) error {
 		StatusCheckContexts []string `xorm:"JSON TEXT"`
 	}
 
-	if err := x.Sync2(new(ProtectedBranch)); err != nil {
+	if err := x.Sync(new(ProtectedBranch)); err != nil {
 		return err
 	}
 

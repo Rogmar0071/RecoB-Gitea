@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,20 +18,19 @@ import (
 	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/util"
 
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
 // argsSet checks that all the required arguments are set. args is a list of
 // arguments that must be set in the passed Context.
-func argsSet(c *cli.Context, args ...string) error {
+func argsSet(c *cli.Command, args ...string) error {
 	for _, a := range args {
 		if !c.IsSet(a) {
 			return errors.New(a + " is not set")
 		}
 
-		if util.IsEmptyString(c.String(a)) {
+		if c.Value(a) == nil {
 			return errors.New(a + " is required")
 		}
 	}
@@ -57,10 +57,9 @@ func confirm() (bool, error) {
 }
 
 func initDB(ctx context.Context) error {
-	setting.InitProviderFromExistingFile()
-	setting.LoadCommonSettings()
+	setting.MustInstalled()
 	setting.LoadDBSetting()
-	setting.InitSQLLog(false)
+	setting.InitSQLLoggersForCli(log.INFO)
 
 	if setting.Database.Type == "" {
 		log.Fatal(`Database settings are missing from the configuration file: %q.
@@ -93,4 +92,59 @@ func installSignals() (context.Context, context.CancelFunc) {
 	}()
 
 	return ctx, cancel
+}
+
+func setupConsoleLogger(level log.Level, colorize bool, out io.Writer) {
+	if out != os.Stdout && out != os.Stderr {
+		panic("setupConsoleLogger can only be used with os.Stdout or os.Stderr")
+	}
+
+	writeMode := log.WriterMode{
+		Level:        level,
+		Colorize:     colorize,
+		WriterOption: log.WriterConsoleOption{Stderr: out == os.Stderr},
+	}
+	writer := log.NewEventWriterConsole("console-default", writeMode)
+	log.GetManager().GetLogger(log.DEFAULT).ReplaceAllWriters(writer)
+}
+
+func globalBool(c *cli.Command, name string) bool {
+	for _, ctx := range c.Lineage() {
+		if ctx.Bool(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// PrepareConsoleLoggerLevel by default, use INFO level for console logger, but some sub-commands (for git/ssh protocol) shouldn't output any log to stdout.
+// Any log appears in git stdout pipe will break the git protocol, eg: client can't push and hangs forever.
+func PrepareConsoleLoggerLevel(defaultLevel log.Level) func(context.Context, *cli.Command) (context.Context, error) {
+	return func(ctx context.Context, c *cli.Command) (context.Context, error) {
+		if setting.InstallLock {
+			// During config loading, there might also be logs (for example: deprecation warnings).
+			// It must make sure that console logger is set up before config is loaded.
+			log.Error("Config is loaded before console logger is setup, it will cause bugs. Please fix it.")
+			return nil, errors.New("console logger must be setup before config is loaded")
+		}
+		level := defaultLevel
+		if globalBool(c, "quiet") {
+			level = log.FATAL
+		}
+		if globalBool(c, "debug") || globalBool(c, "verbose") {
+			level = log.TRACE
+		}
+		log.SetConsoleLogger(log.DEFAULT, "console-default", level)
+		return ctx, nil
+	}
+}
+
+func isValidDefaultSubCommand(cmd *cli.Command) (string, bool) {
+	// Dirty patch for urfave/cli's strange design.
+	// "./gitea bad-cmd" should not start the web server.
+	rootArgs := cmd.Root().Args().Slice()
+	if len(rootArgs) != 0 && rootArgs[0] != cmd.Name {
+		return rootArgs[0], false
+	}
+	return "", true
 }

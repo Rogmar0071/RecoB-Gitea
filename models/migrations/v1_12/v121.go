@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_12 //nolint
+package v1_12
 
 import "xorm.io/xorm"
 
@@ -12,5 +12,5 @@ func AddIsRestricted(x *xorm.Engine) error {
 		IsRestricted bool  `xorm:"NOT NULL DEFAULT false"`
 	}
 
-	return x.Sync2(new(User))
+	return x.Sync(new(User))
 }

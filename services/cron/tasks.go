@@ -7,16 +7,21 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
+	"time"
 
 	"code.gitea.io/gitea/models/db"
 	system_model "code.gitea.io/gitea/models/system"
 	user_model "code.gitea.io/gitea/models/user"
+	"code.gitea.io/gitea/modules/globallock"
 	"code.gitea.io/gitea/modules/graceful"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/process"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/translation"
+
+	"github.com/go-co-op/gocron/v2"
 )
 
 var (
@@ -36,6 +41,8 @@ type Task struct {
 	LastMessage string
 	LastDoer    string
 	ExecTimes   int64
+	// This stores the time of the last manual run of this task.
+	LastRun time.Time
 }
 
 // DoRunAtStart returns if this task should run at the start
@@ -67,26 +74,44 @@ func (t *Task) Run() {
 	}, t.config)
 }
 
+func getCronTaskLockKey(name string) string {
+	return "cron_task:" + name
+}
+
 // RunWithUser will run the task incrementing the cron counter at the time with User
 func (t *Task) RunWithUser(doer *user_model.User, config Config) {
-	if !taskStatusTable.StartIfNotRunning(t.Name) {
+	locked, releaser, err := globallock.TryLock(graceful.GetManager().ShutdownContext(), getCronTaskLockKey(t.Name))
+	if err != nil {
+		log.Error("Failed to acquire lock for cron task %q: %v", t.Name, err)
 		return
 	}
+	if !locked {
+		log.Trace("a cron task %q is already running", t.Name)
+		return
+	}
+	defer releaser()
+
 	t.lock.Lock()
 	if config == nil {
 		config = t.config
 	}
 	t.ExecTimes++
 	t.lock.Unlock()
-	defer func() {
-		taskStatusTable.Stop(t.Name)
-		if err := recover(); err != nil {
-			// Recover a panic within the
-			combinedErr := fmt.Errorf("%s\n%s", err, log.Stack(2))
-			log.Error("PANIC whilst running task: %s Value: %v", t.Name, combinedErr)
-		}
-	}()
+
 	graceful.GetManager().RunWithShutdownContext(func(baseCtx context.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				// Recover a panic within the execution of the task.
+				combinedErr := fmt.Errorf("%s\n%s", err, log.Stack(2))
+				log.Error("PANIC whilst running task: %s Value: %v", t.Name, combinedErr)
+			}
+		}()
+		// Store the time of this run, before the function is executed, so it
+		// matches the behavior of what the cron library does.
+		t.lock.Lock()
+		t.LastRun = time.Now()
+		t.lock.Unlock()
+
 		pm := process.GetManager()
 		doerName := ""
 		if doer != nil && doer.ID != -1 {
@@ -147,7 +172,7 @@ func RegisterTask(name string, config Config, fun func(context.Context, *user_mo
 	log.Debug("Registering task: %s", name)
 
 	i18nKey := "admin.dashboard." + name
-	if value := translation.NewLocale("en-US").Tr(i18nKey); value == i18nKey {
+	if value := translation.NewLocale("en-US").TrString(i18nKey); value == i18nKey {
 		return fmt.Errorf("translation is missing for task %q, please add translation for %q", name, i18nKey)
 	}
 
@@ -176,8 +201,7 @@ func RegisterTask(name string, config Config, fun func(context.Context, *user_mo
 
 	if config.IsEnabled() {
 		// We cannot use the entry return as there is no way to lock it
-		if _, err = c.AddJob(name, config.GetSchedule(), task); err != nil {
-			log.Error("Unable to register cron task with name: %s Error: %v", name, err)
+		if err := addTaskToScheduler(task); err != nil {
 			return err
 		}
 	}
@@ -198,4 +222,23 @@ func RegisterTaskFatal(name string, config Config, fun func(context.Context, *us
 	if err := RegisterTask(name, config, fun); err != nil {
 		log.Fatal("Unable to register cron task %s Error: %v", name, err)
 	}
+}
+
+func addTaskToScheduler(task *Task) error {
+	tags := []string{task.Name, task.config.GetSchedule()} // name and schedule can't be get from job, so we add them as tag
+	withSeconds := scheduleHasSeconds(task.config.GetSchedule())
+	_, err := scheduler.NewJob(
+		gocron.CronJob(task.config.GetSchedule(), withSeconds),
+		gocron.NewTask(task.Run),
+		gocron.WithTags(tags...),
+	)
+	if err != nil {
+		log.Error("Unable to register cron task with name: %s Error: %v", task.Name, err)
+		return err
+	}
+	return nil
+}
+
+func scheduleHasSeconds(schedule string) bool {
+	return len(strings.Fields(schedule)) >= 6
 }

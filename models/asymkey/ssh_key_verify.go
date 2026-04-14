@@ -4,7 +4,8 @@
 package asymkey
 
 import (
-	"bytes"
+	"context"
+	"strings"
 
 	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/modules/log"
@@ -13,37 +14,34 @@ import (
 )
 
 // VerifySSHKey marks a SSH key as verified
-func VerifySSHKey(ownerID int64, fingerprint, token, signature string) (string, error) {
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
-		return "", err
-	}
-	defer committer.Close()
+func VerifySSHKey(ctx context.Context, ownerID int64, fingerprint, token, signature string) (string, error) {
+	return db.WithTx2(ctx, func(ctx context.Context) (string, error) {
+		key := new(PublicKey)
 
-	key := new(PublicKey)
-
-	has, err := db.GetEngine(ctx).Where("owner_id = ? AND fingerprint = ?", ownerID, fingerprint).Get(key)
-	if err != nil {
-		return "", err
-	} else if !has {
-		return "", ErrKeyNotExist{}
-	}
-
-	if err := sshsig.Verify(bytes.NewBuffer([]byte(token)), []byte(signature), []byte(key.Content), "gitea"); err != nil {
-		log.Error("Unable to validate token signature. Error: %v", err)
-		return "", ErrSSHInvalidTokenSignature{
-			Fingerprint: key.Fingerprint,
+		has, err := db.GetEngine(ctx).Where("owner_id = ? AND fingerprint = ?", ownerID, fingerprint).Get(key)
+		if err != nil {
+			return "", err
+		} else if !has {
+			return "", ErrKeyNotExist{}
 		}
-	}
 
-	key.Verified = true
-	if _, err := db.GetEngine(ctx).ID(key.ID).Cols("verified").Update(key); err != nil {
-		return "", err
-	}
+		err = sshsig.Verify(strings.NewReader(token), []byte(signature), []byte(key.Content), "gitea")
+		if err != nil {
+			// edge case for Windows based shells that will add CR LF if piped to ssh-keygen command
+			// see https://github.com/PowerShell/PowerShell/issues/5974
+			if sshsig.Verify(strings.NewReader(token+"\r\n"), []byte(signature), []byte(key.Content), "gitea") != nil {
+				log.Debug("VerifySSHKey sshsig.Verify failed: %v", err)
+				return "", ErrSSHInvalidTokenSignature{
+					Fingerprint: key.Fingerprint,
+				}
+			}
+		}
 
-	if err := committer.Commit(); err != nil {
-		return "", err
-	}
+		key.Verified = true
+		if _, err := db.GetEngine(ctx).ID(key.ID).Cols("verified").Update(key); err != nil {
+			return "", err
+		}
 
-	return key.Fingerprint, nil
+		return key.Fingerprint, nil
+	})
 }

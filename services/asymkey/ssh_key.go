@@ -4,14 +4,16 @@
 package asymkey
 
 import (
+	"context"
+
 	asymkey_model "code.gitea.io/gitea/models/asymkey"
 	"code.gitea.io/gitea/models/db"
 	user_model "code.gitea.io/gitea/models/user"
 )
 
 // DeletePublicKey deletes SSH key information both in database and authorized_keys file.
-func DeletePublicKey(doer *user_model.User, id int64) (err error) {
-	key, err := asymkey_model.GetPublicKeyByID(id)
+func DeletePublicKey(ctx context.Context, doer *user_model.User, id int64) (err error) {
+	key, err := asymkey_model.GetPublicKeyByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -25,24 +27,13 @@ func DeletePublicKey(doer *user_model.User, id int64) (err error) {
 		}
 	}
 
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
+	if _, err = db.DeleteByID[asymkey_model.PublicKey](ctx, id); err != nil {
 		return err
 	}
-	defer committer.Close()
-
-	if err = asymkey_model.DeletePublicKeys(ctx, id); err != nil {
-		return err
-	}
-
-	if err = committer.Commit(); err != nil {
-		return err
-	}
-	committer.Close()
 
 	if key.Type == asymkey_model.KeyTypePrincipal {
-		return asymkey_model.RewriteAllPrincipalKeys(db.DefaultContext)
+		return RewriteAllPrincipalKeys(ctx)
 	}
 
-	return asymkey_model.RewriteAllPublicKeys()
+	return RewriteAllPublicKeys(ctx)
 }

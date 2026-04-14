@@ -25,7 +25,7 @@ func (err ErrCancelled) Error() string {
 }
 
 // ErrCancelledf returns an ErrCancelled for the provided format and args
-func ErrCancelledf(format string, args ...interface{}) error {
+func ErrCancelledf(format string, args ...any) error {
 	return ErrCancelled{
 		fmt.Sprintf(format, args...),
 	}
@@ -65,7 +65,7 @@ func (err ErrNotExist) Error() string {
 	if err.ID != 0 {
 		return fmt.Sprintf("%s does not exist [id: %d]", name, err.ID)
 	}
-	return fmt.Sprintf("%s does not exist", name)
+	return name + " does not exist"
 }
 
 // Unwrap unwraps this as a ErrNotExist err

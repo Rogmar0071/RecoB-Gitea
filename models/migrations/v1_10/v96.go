@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import (
 	"path/filepath"
@@ -53,7 +53,7 @@ func DeleteOrphanedAttachments(x *xorm.Engine) error {
 
 		for _, attachment := range attachments {
 			uuid := attachment.UUID
-			if err := util.RemoveAll(filepath.Join(setting.Attachment.Path, uuid[0:1], uuid[1:2], uuid)); err != nil {
+			if err := util.RemoveAll(filepath.Join(setting.Attachment.Storage.Path, uuid[0:1], uuid[1:2], uuid)); err != nil {
 				return err
 			}
 		}

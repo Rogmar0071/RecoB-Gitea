@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/test"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -47,7 +48,7 @@ func Test_IsValidURL(t *testing.T) {
 }
 
 func Test_IsValidExternalURL(t *testing.T) {
-	setting.AppURL = "https://try.gitea.io/"
+	defer test.MockVariableValue(&setting.AppURL, "https://try.gitea.io/")()
 
 	cases := []struct {
 		description string
@@ -89,7 +90,7 @@ func Test_IsValidExternalURL(t *testing.T) {
 }
 
 func Test_IsValidExternalTrackerURLFormat(t *testing.T) {
-	setting.AppURL = "https://try.gitea.io/"
+	defer test.MockVariableValue(&setting.AppURL, "https://try.gitea.io/")()
 
 	cases := []struct {
 		description string
@@ -182,6 +183,27 @@ func TestIsValidUsername(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.arg, func(t *testing.T) {
 			assert.Equalf(t, tt.want, IsValidUsername(tt.arg), "IsValidUsername(%v)", tt.arg)
+		})
+	}
+}
+
+func TestIsValidBadgeSlug(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{arg: "badge-1", want: true},
+		{arg: "badge.slug", want: true},
+		{arg: "new", want: true},
+		{arg: "Badge_1", want: true},
+		{arg: "a..b", want: false},
+		{arg: "a/b", want: false},
+		{arg: "Awesome!", want: false},
+		{arg: "Emoji 💯", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.arg, func(t *testing.T) {
+			assert.Equalf(t, tt.want, IsValidBadgeSlug(tt.arg), "IsValidBadgeSlug(%v)", tt.arg)
 		})
 	}
 }

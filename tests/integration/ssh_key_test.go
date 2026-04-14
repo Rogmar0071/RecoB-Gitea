@@ -27,14 +27,14 @@ func doCheckRepositoryEmptyStatus(ctx APITestContext, isEmpty bool) func(*testin
 
 func doAddChangesToCheckout(dstPath, filename string) func(*testing.T) {
 	return func(t *testing.T) {
-		assert.NoError(t, os.WriteFile(filepath.Join(dstPath, filename), []byte(fmt.Sprintf("# Testing Repository\n\nOriginally created in: %s at time: %v", dstPath, time.Now())), 0o644))
-		assert.NoError(t, git.AddChanges(dstPath, true))
+		assert.NoError(t, os.WriteFile(filepath.Join(dstPath, filename), fmt.Appendf(nil, "# Testing Repository\n\nOriginally created in: %s at time: %v", dstPath, time.Now()), 0o644))
+		assert.NoError(t, gitAddChangesDeprecated(t.Context(), dstPath, true))
 		signature := git.Signature{
 			Email: "test@example.com",
 			Name:  "test",
 			When:  time.Now(),
 		}
-		assert.NoError(t, git.CommitChanges(dstPath, git.CommitChangesOptions{
+		assert.NoError(t, gitCommitChangesDeprecated(t.Context(), dstPath, gitCommitChangesOptions{
 			Committer: &signature,
 			Author:    &signature,
 			Message:   "Initial Commit",
@@ -48,10 +48,10 @@ func TestPushDeployKeyOnEmptyRepo(t *testing.T) {
 
 func testPushDeployKeyOnEmptyRepo(t *testing.T, u *url.URL) {
 	// OK login
-	ctx := NewAPITestContext(t, "user2", "deploy-key-empty-repo-1", auth_model.AccessTokenScopeRepo)
-	ctxWithDeleteRepo := NewAPITestContext(t, "user2", "deploy-key-empty-repo-1", auth_model.AccessTokenScopeRepo, auth_model.AccessTokenScopeDeleteRepo)
+	ctx := NewAPITestContext(t, "user2", "deploy-key-empty-repo-1", auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeWriteUser)
+	ctxWithDeleteRepo := NewAPITestContext(t, "user2", "deploy-key-empty-repo-1", auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeWriteUser)
 
-	keyname := fmt.Sprintf("%s-push", ctx.Reponame)
+	keyname := ctx.Reponame + "-push"
 	u.Path = ctx.GitPath()
 
 	t.Run("CreateEmptyRepository", doAPICreateRepository(ctx, true))
@@ -89,11 +89,11 @@ func testKeyOnlyOneType(t *testing.T, u *url.URL) {
 	reponame := "ssh-key-test-repo"
 	username := "user2"
 	u.Path = fmt.Sprintf("%s/%s.git", username, reponame)
-	keyname := fmt.Sprintf("%s-push", reponame)
+	keyname := reponame + "-push"
 
 	// OK login
-	ctx := NewAPITestContext(t, username, reponame, auth_model.AccessTokenScopeRepo, auth_model.AccessTokenScopeAdminPublicKey)
-	ctxWithDeleteRepo := NewAPITestContext(t, username, reponame, auth_model.AccessTokenScopeRepo, auth_model.AccessTokenScopeAdminPublicKey, auth_model.AccessTokenScopeDeleteRepo)
+	ctx := NewAPITestContext(t, username, reponame, auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeWriteUser)
+	ctxWithDeleteRepo := NewAPITestContext(t, username, reponame, auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeWriteUser)
 
 	otherCtx := ctx
 	otherCtx.Reponame = "ssh-key-test-repo-2"

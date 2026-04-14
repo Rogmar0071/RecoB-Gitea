@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_8 //nolint
+package v1_8
 
 import (
 	"xorm.io/xorm"
@@ -12,5 +12,5 @@ func AddUserDefaultTheme(x *xorm.Engine) error {
 		Theme string `xorm:"VARCHAR(30) NOT NULL DEFAULT ''"`
 	}
 
-	return x.Sync2(new(User))
+	return x.Sync(new(User))
 }

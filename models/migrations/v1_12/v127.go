@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_12 //nolint
+package v1_12
 
 import (
 	"fmt"
@@ -34,11 +34,11 @@ func AddLanguageStats(x *xorm.Engine) error {
 		IndexerType RepoIndexerType `xorm:"INDEX(s) NOT NULL DEFAULT 0"`
 	}
 
-	if err := x.Sync2(new(LanguageStat)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(LanguageStat)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
-	if err := x.Sync2(new(RepoIndexerStatus)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(RepoIndexerStatus)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 	return nil
 }

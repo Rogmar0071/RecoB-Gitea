@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_11 //nolint
+package v1_11
 
 import (
 	"fmt"
@@ -15,8 +15,8 @@ func FeatureChangeTargetBranch(x *xorm.Engine) error {
 		NewRef string
 	}
 
-	if err := x.Sync2(new(Comment)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(Comment)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 	return nil
 }

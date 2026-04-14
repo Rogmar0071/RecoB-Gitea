@@ -15,10 +15,10 @@ import (
 func TestLookupUserRedirect(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
-	userID, err := user_model.LookupUserRedirect("olduser1")
+	userID, err := user_model.LookupUserRedirect(t.Context(), "olduser1")
 	assert.NoError(t, err)
 	assert.EqualValues(t, 1, userID)
 
-	_, err = user_model.LookupUserRedirect("doesnotexist")
+	_, err = user_model.LookupUserRedirect(t.Context(), "doesnotexist")
 	assert.True(t, user_model.IsErrUserRedirectNotExist(err))
 }

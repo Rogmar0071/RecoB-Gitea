@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_15 //nolint
+package v1_15
 
 import (
 	"xorm.io/xorm"
@@ -13,5 +13,5 @@ func AddLFSMirrorColumns(x *xorm.Engine) error {
 		LFSEndpoint string `xorm:"lfs_endpoint TEXT"`
 	}
 
-	return x.Sync2(new(Mirror))
+	return x.Sync(new(Mirror))
 }

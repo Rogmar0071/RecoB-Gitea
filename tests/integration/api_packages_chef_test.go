@@ -25,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/models/packages"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
@@ -83,7 +82,7 @@ kPuCu6vH9brvOuYo0q8hLVNkBeXcimRpsDjLhQYzEJjoMTbaiVGnjBky+PWNiofJ
 nwIDAQAB
 -----END PUBLIC KEY-----`
 
-	err := user_model.SetUserSetting(user.ID, chef_module.SettingPublicPem, pubPem)
+	err := user_model.SetUserSetting(t.Context(), user.ID, chef_module.SettingPublicPem, pubPem)
 	assert.NoError(t, err)
 
 	t.Run("Authenticate", func(t *testing.T) {
@@ -93,7 +92,7 @@ nwIDAQAB
 			defer tests.PrintCurrentTest(t)()
 
 			req := NewRequest(t, "POST", "/dummy")
-			u, err := auth.Verify(req, nil, nil, nil)
+			u, err := auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.NoError(t, err)
 		})
@@ -101,9 +100,9 @@ nwIDAQAB
 		t.Run("NotExistingUser", func(t *testing.T) {
 			defer tests.PrintCurrentTest(t)()
 
-			req := NewRequest(t, "POST", "/dummy")
-			req.Header.Set("X-Ops-Userid", "not-existing-user")
-			u, err := auth.Verify(req, nil, nil, nil)
+			req := NewRequest(t, "POST", "/dummy").
+				SetHeader("X-Ops-Userid", "not-existing-user")
+			u, err := auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 		})
@@ -111,14 +110,14 @@ nwIDAQAB
 		t.Run("Timestamp", func(t *testing.T) {
 			defer tests.PrintCurrentTest(t)()
 
-			req := NewRequest(t, "POST", "/dummy")
-			req.Header.Set("X-Ops-Userid", user.Name)
-			u, err := auth.Verify(req, nil, nil, nil)
+			req := NewRequest(t, "POST", "/dummy").
+				SetHeader("X-Ops-Userid", user.Name)
+			u, err := auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			req.Header.Set("X-Ops-Timestamp", "2023-01-01T00:00:00Z")
-			u, err = auth.Verify(req, nil, nil, nil)
+			req.SetHeader("X-Ops-Timestamp", "2023-01-01T00:00:00Z")
+			u, err = auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 		})
@@ -126,30 +125,30 @@ nwIDAQAB
 		t.Run("SigningVersion", func(t *testing.T) {
 			defer tests.PrintCurrentTest(t)()
 
-			req := NewRequest(t, "POST", "/dummy")
-			req.Header.Set("X-Ops-Userid", user.Name)
-			req.Header.Set("X-Ops-Timestamp", time.Now().UTC().Format(time.RFC3339))
-			u, err := auth.Verify(req, nil, nil, nil)
+			req := NewRequest(t, "POST", "/dummy").
+				SetHeader("X-Ops-Userid", user.Name).
+				SetHeader("X-Ops-Timestamp", time.Now().UTC().Format(time.RFC3339))
+			u, err := auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			req.Header.Set("X-Ops-Sign", "version=none")
-			u, err = auth.Verify(req, nil, nil, nil)
+			req.SetHeader("X-Ops-Sign", "version=none")
+			u, err = auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			req.Header.Set("X-Ops-Sign", "version=1.4")
-			u, err = auth.Verify(req, nil, nil, nil)
+			req.SetHeader("X-Ops-Sign", "version=1.4")
+			u, err = auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			req.Header.Set("X-Ops-Sign", "version=1.0;algorithm=sha2")
-			u, err = auth.Verify(req, nil, nil, nil)
+			req.SetHeader("X-Ops-Sign", "version=1.0;algorithm=sha2")
+			u, err = auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			req.Header.Set("X-Ops-Sign", "version=1.0;algorithm=sha256")
-			u, err = auth.Verify(req, nil, nil, nil)
+			req.SetHeader("X-Ops-Sign", "version=1.0;algorithm=sha256")
+			u, err = auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 		})
@@ -159,17 +158,18 @@ nwIDAQAB
 
 			ts := time.Now().UTC().Format(time.RFC3339)
 
-			req := NewRequest(t, "POST", "/dummy")
-			req.Header.Set("X-Ops-Userid", user.Name)
-			req.Header.Set("X-Ops-Timestamp", ts)
-			req.Header.Set("X-Ops-Sign", "version=1.0;algorithm=sha1")
-			req.Header.Set("X-Ops-Content-Hash", "unused")
-			req.Header.Set("X-Ops-Authorization-4", "dummy")
-			u, err := auth.Verify(req, nil, nil, nil)
+			req := NewRequest(t, "POST", "/dummy").
+				SetHeader("X-Ops-Userid", user.Name).
+				SetHeader("X-Ops-Timestamp", ts).
+				SetHeader("X-Ops-Sign", "version=1.0;algorithm=sha1").
+				SetHeader("X-Ops-Content-Hash", "unused").
+				SetHeader("X-Ops-Authorization-4", "dummy")
+			u, err := auth.Verify(req.Request, nil, nil, nil)
 			assert.Nil(t, u)
 			assert.Error(t, err)
 
-			signRequest := func(t *testing.T, req *http.Request, version string) {
+			signRequest := func(rw *RequestWrapper, version string) {
+				req := rw.Request
 				username := req.Header.Get("X-Ops-Userid")
 				if version != "1.0" && version != "1.3" {
 					sum := sha1.Sum([]byte(username))
@@ -180,7 +180,7 @@ nwIDAQAB
 
 				var data []byte
 				if version == "1.3" {
-					data = []byte(fmt.Sprintf(
+					data = fmt.Appendf(nil,
 						"Method:%s\nPath:%s\nX-Ops-Content-Hash:%s\nX-Ops-Sign:version=%s\nX-Ops-Timestamp:%s\nX-Ops-UserId:%s\nX-Ops-Server-API-Version:%s",
 						req.Method,
 						path.Clean(req.URL.Path),
@@ -189,17 +189,17 @@ nwIDAQAB
 						req.Header.Get("X-Ops-Timestamp"),
 						username,
 						req.Header.Get("X-Ops-Server-Api-Version"),
-					))
+					)
 				} else {
 					sum := sha1.Sum([]byte(path.Clean(req.URL.Path)))
-					data = []byte(fmt.Sprintf(
+					data = fmt.Appendf(nil,
 						"Method:%s\nHashed Path:%s\nX-Ops-Content-Hash:%s\nX-Ops-Timestamp:%s\nX-Ops-UserId:%s",
 						req.Method,
 						base64.StdEncoding.EncodeToString(sum[:]),
 						req.Header.Get("X-Ops-Content-Hash"),
 						req.Header.Get("X-Ops-Timestamp"),
 						username,
-					))
+					)
 				}
 
 				for k := range req.Header {
@@ -254,8 +254,8 @@ nwIDAQAB
 				t.Run(v, func(t *testing.T) {
 					defer tests.PrintCurrentTest(t)()
 
-					signRequest(t, req, v)
-					u, err = auth.Verify(req, nil, nil, nil)
+					signRequest(req, v)
+					u, err = auth.Verify(req.Request, nil, nil, nil)
 					assert.NotNil(t, u)
 					assert.NoError(t, err)
 				})
@@ -273,7 +273,7 @@ nwIDAQAB
 	uploadPackage := func(t *testing.T, version string, expectedStatus int) {
 		var body bytes.Buffer
 		mpw := multipart.NewWriter(&body)
-		part, _ := mpw.CreateFormFile("tarball", fmt.Sprintf("%s.tar.gz", version))
+		part, _ := mpw.CreateFormFile("tarball", version+".tar.gz")
 		zw := gzip.NewWriter(part)
 		tw := tar.NewWriter(zw)
 
@@ -291,9 +291,9 @@ nwIDAQAB
 		zw.Close()
 		mpw.Close()
 
-		req := NewRequestWithBody(t, "POST", root+"/cookbooks", &body)
-		req.Header.Add("Content-Type", mpw.FormDataContentType())
-		AddBasicAuthHeader(req, user.Name)
+		req := NewRequestWithBody(t, "POST", root+"/cookbooks", &body).
+			SetHeader("Content-Type", mpw.FormDataContentType()).
+			AddBasicAuth(user.Name)
 		MakeRequest(t, req, expectedStatus)
 	}
 
@@ -305,24 +305,24 @@ nwIDAQAB
 
 		uploadPackage(t, packageVersion, http.StatusCreated)
 
-		pvs, err := packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypeChef)
+		pvs, err := packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypeChef)
 		assert.NoError(t, err)
 		assert.Len(t, pvs, 1)
 
-		pd, err := packages.GetPackageDescriptor(db.DefaultContext, pvs[0])
+		pd, err := packages.GetPackageDescriptor(t.Context(), pvs[0])
 		assert.NoError(t, err)
 		assert.NotNil(t, pd.SemVer)
 		assert.IsType(t, &chef_module.Metadata{}, pd.Metadata)
 		assert.Equal(t, packageName, pd.Package.Name)
 		assert.Equal(t, packageVersion, pd.Version.Version)
 
-		pfs, err := packages.GetFilesByVersionID(db.DefaultContext, pvs[0].ID)
+		pfs, err := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)
 		assert.NoError(t, err)
 		assert.Len(t, pfs, 1)
-		assert.Equal(t, fmt.Sprintf("%s.tar.gz", packageVersion), pfs[0].Name)
+		assert.Equal(t, packageVersion+".tar.gz", pfs[0].Name)
 		assert.True(t, pfs[0].IsLead)
 
-		uploadPackage(t, packageVersion, http.StatusBadRequest)
+		uploadPackage(t, packageVersion, http.StatusConflict)
 	})
 
 	t.Run("Download", func(t *testing.T) {
@@ -394,8 +394,8 @@ nwIDAQAB
 		}
 
 		for i, c := range cases {
-			req := NewRequest(t, "GET", fmt.Sprintf("%s/search?q=%s&start=%d&items=%d", root, c.Query, c.Start, c.Items))
-			req = AddBasicAuthHeader(req, user.Name)
+			req := NewRequest(t, "GET", fmt.Sprintf("%s/search?q=%s&start=%d&items=%d", root, c.Query, c.Start, c.Items)).
+				AddBasicAuth(user.Name)
 			resp := MakeRequest(t, req, http.StatusOK)
 
 			var result Result
@@ -445,8 +445,8 @@ nwIDAQAB
 		}
 
 		for i, c := range cases {
-			req := NewRequest(t, "GET", fmt.Sprintf("%s/cookbooks?start=%d&items=%d&sort=%s", root, c.Start, c.Items, c.Sort))
-			req = AddBasicAuthHeader(req, user.Name)
+			req := NewRequest(t, "GET", fmt.Sprintf("%s/cookbooks?start=%d&items=%d&sort=%s", root, c.Start, c.Items, c.Sort)).
+				AddBasicAuth(user.Name)
 			resp := MakeRequest(t, req, http.StatusOK)
 
 			var result Result
@@ -533,11 +533,11 @@ nwIDAQAB
 			req := NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s/versions/%s", root, packageName, "1.0.2"))
 			MakeRequest(t, req, http.StatusUnauthorized)
 
-			req = NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s/versions/%s", root, packageName, "1.0.2"))
-			AddBasicAuthHeader(req, user.Name)
+			req = NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s/versions/%s", root, packageName, "1.0.2")).
+				AddBasicAuth(user.Name)
 			MakeRequest(t, req, http.StatusOK)
 
-			pv, err := packages.GetVersionByNameAndVersion(db.DefaultContext, user.ID, packages.TypeChef, packageName, "1.0.2")
+			pv, err := packages.GetVersionByNameAndVersion(t.Context(), user.ID, packages.TypeChef, packageName, "1.0.2")
 			assert.Nil(t, pv)
 			assert.Error(t, err)
 		})
@@ -548,11 +548,11 @@ nwIDAQAB
 			req := NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s", root, packageName))
 			MakeRequest(t, req, http.StatusUnauthorized)
 
-			req = NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s", root, packageName))
-			AddBasicAuthHeader(req, user.Name)
+			req = NewRequest(t, "DELETE", fmt.Sprintf("%s/cookbooks/%s", root, packageName)).
+				AddBasicAuth(user.Name)
 			MakeRequest(t, req, http.StatusOK)
 
-			pvs, err := packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypeChef)
+			pvs, err := packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypeChef)
 			assert.NoError(t, err)
 			assert.Empty(t, pvs)
 		})

@@ -4,29 +4,58 @@
 package utils
 
 import (
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"code.gitea.io/gitea/models/db"
+	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/models/webhook"
-	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/validation"
 	webhook_module "code.gitea.io/gitea/modules/webhook"
+	"code.gitea.io/gitea/services/context"
 	webhook_service "code.gitea.io/gitea/services/webhook"
 )
 
-// GetOrgHook get an organization's webhook. If there is an error, write to
-// `ctx` accordingly and return the error
-func GetOrgHook(ctx *context.APIContext, orgID, hookID int64) (*webhook.Webhook, error) {
-	w, err := webhook.GetWebhookByOrgID(orgID, hookID)
+// ListOwnerHooks lists the webhooks of the provided owner
+func ListOwnerHooks(ctx *context.APIContext, owner *user_model.User) {
+	listOptions := GetListOptions(ctx)
+	opts := &webhook.ListWebhookOptions{
+		ListOptions: listOptions,
+		OwnerID:     owner.ID,
+	}
+
+	hooks, count, err := db.FindAndCount[webhook.Webhook](ctx, opts)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+
+	apiHooks := make([]*api.Hook, len(hooks))
+	for i, hook := range hooks {
+		apiHooks[i], err = webhook_service.ToHook(owner.HomeLink(), hook)
+		if err != nil {
+			ctx.APIErrorInternal(err)
+			return
+		}
+	}
+	ctx.SetLinkHeader(count, listOptions.PageSize)
+	ctx.SetTotalCountHeader(count)
+	ctx.JSON(http.StatusOK, apiHooks)
+}
+
+// GetOwnerHook gets an user or organization webhook. Errors are written to ctx.
+func GetOwnerHook(ctx *context.APIContext, ownerID, hookID int64) (*webhook.Webhook, error) {
+	w, err := webhook.GetWebhookByOwnerID(ctx, ownerID, hookID)
 	if err != nil {
 		if webhook.IsErrWebhookNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetWebhookByOrgID", err)
+			ctx.APIErrorInternal(err)
 		}
 		return nil, err
 	}
@@ -36,33 +65,37 @@ func GetOrgHook(ctx *context.APIContext, orgID, hookID int64) (*webhook.Webhook,
 // GetRepoHook get a repo's webhook. If there is an error, write to `ctx`
 // accordingly and return the error
 func GetRepoHook(ctx *context.APIContext, repoID, hookID int64) (*webhook.Webhook, error) {
-	w, err := webhook.GetWebhookByRepoID(repoID, hookID)
+	w, err := webhook.GetWebhookByRepoID(ctx, repoID, hookID)
 	if err != nil {
 		if webhook.IsErrWebhookNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetWebhookByID", err)
+			ctx.APIErrorInternal(err)
 		}
 		return nil, err
 	}
 	return w, nil
 }
 
-// CheckCreateHookOption check if a CreateHookOption form is valid. If invalid,
+// checkCreateHookOption check if a CreateHookOption form is valid. If invalid,
 // write the appropriate error to `ctx`. Return whether the form is valid
-func CheckCreateHookOption(ctx *context.APIContext, form *api.CreateHookOption) bool {
+func checkCreateHookOption(ctx *context.APIContext, form *api.CreateHookOption) bool {
 	if !webhook_service.IsValidHookTaskType(form.Type) {
-		ctx.Error(http.StatusUnprocessableEntity, "", fmt.Sprintf("Invalid hook type: %s", form.Type))
+		ctx.APIError(http.StatusUnprocessableEntity, "Invalid hook type: "+form.Type)
 		return false
 	}
 	for _, name := range []string{"url", "content_type"} {
 		if _, ok := form.Config[name]; !ok {
-			ctx.Error(http.StatusUnprocessableEntity, "", "Missing config option: "+name)
+			ctx.APIError(http.StatusUnprocessableEntity, "Missing config option: "+name)
 			return false
 		}
 	}
 	if !webhook.IsValidHookContentType(form.Config["content_type"]) {
-		ctx.Error(http.StatusUnprocessableEntity, "", "Invalid content type")
+		ctx.APIError(http.StatusUnprocessableEntity, "Invalid content type")
+		return false
+	}
+	if !validation.IsValidURL(form.Config["url"]) {
+		ctx.APIError(http.StatusUnprocessableEntity, "Invalid url")
 		return false
 	}
 	return true
@@ -72,23 +105,22 @@ func CheckCreateHookOption(ctx *context.APIContext, form *api.CreateHookOption) 
 func AddSystemHook(ctx *context.APIContext, form *api.CreateHookOption) {
 	hook, ok := addHook(ctx, form, 0, 0)
 	if ok {
-		h, err := webhook_service.ToHook(setting.AppSubURL+"/admin", hook)
+		h, err := webhook_service.ToHook(setting.AppSubURL+"/-/admin", hook)
 		if err != nil {
-			ctx.Error(http.StatusInternalServerError, "convert.ToHook", err)
+			ctx.APIErrorInternal(err)
 			return
 		}
 		ctx.JSON(http.StatusCreated, h)
 	}
 }
 
-// AddOrgHook add a hook to an organization. Writes to `ctx` accordingly
-func AddOrgHook(ctx *context.APIContext, form *api.CreateHookOption) {
-	org := ctx.Org.Organization
-	hook, ok := addHook(ctx, form, org.ID, 0)
+// AddOwnerHook adds a hook to an user or organization
+func AddOwnerHook(ctx *context.APIContext, owner *user_model.User, form *api.CreateHookOption) {
+	hook, ok := addHook(ctx, form, owner.ID, 0)
 	if !ok {
 		return
 	}
-	apiHook, ok := toAPIHook(ctx, org.AsUser().HomeLink(), hook)
+	apiHook, ok := toAPIHook(ctx, owner.HomeLink(), hook)
 	if !ok {
 		return
 	}
@@ -114,7 +146,7 @@ func AddRepoHook(ctx *context.APIContext, form *api.CreateHookOption) {
 func toAPIHook(ctx *context.APIContext, repoLink string, hook *webhook.Webhook) (*api.Hook, bool) {
 	apiHook, err := webhook_service.ToHook(repoLink, hook)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "ToHook", err)
+		ctx.APIErrorInternal(err)
 		return nil, false
 	}
 	return apiHook, true
@@ -128,42 +160,70 @@ func pullHook(events []string, event string) bool {
 	return util.SliceContainsString(events, event, true) || util.SliceContainsString(events, string(webhook_module.HookEventPullRequest), true)
 }
 
-// addHook add the hook specified by `form`, `orgID` and `repoID`. If there is
+func updateHookEvents(events []string) webhook_module.HookEvents {
+	if len(events) == 0 {
+		events = []string{"push"}
+	}
+	hookEvents := make(webhook_module.HookEvents)
+	hookEvents[webhook_module.HookEventCreate] = util.SliceContainsString(events, string(webhook_module.HookEventCreate), true)
+	hookEvents[webhook_module.HookEventPush] = util.SliceContainsString(events, string(webhook_module.HookEventPush), true)
+	hookEvents[webhook_module.HookEventDelete] = util.SliceContainsString(events, string(webhook_module.HookEventDelete), true)
+	hookEvents[webhook_module.HookEventFork] = util.SliceContainsString(events, string(webhook_module.HookEventFork), true)
+	hookEvents[webhook_module.HookEventRepository] = util.SliceContainsString(events, string(webhook_module.HookEventRepository), true)
+	hookEvents[webhook_module.HookEventWiki] = util.SliceContainsString(events, string(webhook_module.HookEventWiki), true)
+	hookEvents[webhook_module.HookEventRelease] = util.SliceContainsString(events, string(webhook_module.HookEventRelease), true)
+	hookEvents[webhook_module.HookEventPackage] = util.SliceContainsString(events, string(webhook_module.HookEventPackage), true)
+	hookEvents[webhook_module.HookEventStatus] = util.SliceContainsString(events, string(webhook_module.HookEventStatus), true)
+	hookEvents[webhook_module.HookEventWorkflowRun] = util.SliceContainsString(events, string(webhook_module.HookEventWorkflowRun), true)
+	hookEvents[webhook_module.HookEventWorkflowJob] = util.SliceContainsString(events, string(webhook_module.HookEventWorkflowJob), true)
+
+	// Issues
+	hookEvents[webhook_module.HookEventIssues] = issuesHook(events, "issues_only")
+	hookEvents[webhook_module.HookEventIssueAssign] = issuesHook(events, string(webhook_module.HookEventIssueAssign))
+	hookEvents[webhook_module.HookEventIssueLabel] = issuesHook(events, string(webhook_module.HookEventIssueLabel))
+	hookEvents[webhook_module.HookEventIssueMilestone] = issuesHook(events, string(webhook_module.HookEventIssueMilestone))
+	hookEvents[webhook_module.HookEventIssueComment] = issuesHook(events, string(webhook_module.HookEventIssueComment))
+
+	// Pull requests
+	hookEvents[webhook_module.HookEventPullRequest] = pullHook(events, "pull_request_only")
+	hookEvents[webhook_module.HookEventPullRequestAssign] = pullHook(events, string(webhook_module.HookEventPullRequestAssign))
+	hookEvents[webhook_module.HookEventPullRequestLabel] = pullHook(events, string(webhook_module.HookEventPullRequestLabel))
+	hookEvents[webhook_module.HookEventPullRequestMilestone] = pullHook(events, string(webhook_module.HookEventPullRequestMilestone))
+	hookEvents[webhook_module.HookEventPullRequestComment] = pullHook(events, string(webhook_module.HookEventPullRequestComment))
+	hookEvents[webhook_module.HookEventPullRequestReview] = pullHook(events, "pull_request_review")
+	hookEvents[webhook_module.HookEventPullRequestReviewRequest] = pullHook(events, string(webhook_module.HookEventPullRequestReviewRequest))
+	hookEvents[webhook_module.HookEventPullRequestSync] = pullHook(events, string(webhook_module.HookEventPullRequestSync))
+	return hookEvents
+}
+
+// addHook add the hook specified by `form`, `ownerID` and `repoID`. If there is
 // an error, write to `ctx` accordingly. Return (webhook, ok)
-func addHook(ctx *context.APIContext, form *api.CreateHookOption, orgID, repoID int64) (*webhook.Webhook, bool) {
-	if len(form.Events) == 0 {
-		form.Events = []string{"push"}
+func addHook(ctx *context.APIContext, form *api.CreateHookOption, ownerID, repoID int64) (*webhook.Webhook, bool) {
+	var isSystemWebhook bool
+	if !checkCreateHookOption(ctx, form) {
+		return nil, false
+	}
+
+	if form.Config["is_system_webhook"] != "" {
+		sw, err := strconv.ParseBool(form.Config["is_system_webhook"])
+		if err != nil {
+			ctx.APIError(http.StatusUnprocessableEntity, "Invalid is_system_webhook value")
+			return nil, false
+		}
+		isSystemWebhook = sw
 	}
 	w := &webhook.Webhook{
-		OrgID:       orgID,
-		RepoID:      repoID,
-		URL:         form.Config["url"],
-		ContentType: webhook.ToHookContentType(form.Config["content_type"]),
-		Secret:      form.Config["secret"],
-		HTTPMethod:  "POST",
+		OwnerID:         ownerID,
+		RepoID:          repoID,
+		Name:            strings.TrimSpace(form.Name),
+		URL:             form.Config["url"],
+		ContentType:     webhook.ToHookContentType(form.Config["content_type"]),
+		Secret:          form.Config["secret"],
+		HTTPMethod:      "POST",
+		IsSystemWebhook: isSystemWebhook,
 		HookEvent: &webhook_module.HookEvent{
 			ChooseEvents: true,
-			HookEvents: webhook_module.HookEvents{
-				Create:               util.SliceContainsString(form.Events, string(webhook_module.HookEventCreate), true),
-				Delete:               util.SliceContainsString(form.Events, string(webhook_module.HookEventDelete), true),
-				Fork:                 util.SliceContainsString(form.Events, string(webhook_module.HookEventFork), true),
-				Issues:               issuesHook(form.Events, "issues_only"),
-				IssueAssign:          issuesHook(form.Events, string(webhook_module.HookEventIssueAssign)),
-				IssueLabel:           issuesHook(form.Events, string(webhook_module.HookEventIssueLabel)),
-				IssueMilestone:       issuesHook(form.Events, string(webhook_module.HookEventIssueMilestone)),
-				IssueComment:         issuesHook(form.Events, string(webhook_module.HookEventIssueComment)),
-				Push:                 util.SliceContainsString(form.Events, string(webhook_module.HookEventPush), true),
-				PullRequest:          pullHook(form.Events, "pull_request_only"),
-				PullRequestAssign:    pullHook(form.Events, string(webhook_module.HookEventPullRequestAssign)),
-				PullRequestLabel:     pullHook(form.Events, string(webhook_module.HookEventPullRequestLabel)),
-				PullRequestMilestone: pullHook(form.Events, string(webhook_module.HookEventPullRequestMilestone)),
-				PullRequestComment:   pullHook(form.Events, string(webhook_module.HookEventPullRequestComment)),
-				PullRequestReview:    pullHook(form.Events, "pull_request_review"),
-				PullRequestSync:      pullHook(form.Events, string(webhook_module.HookEventPullRequestSync)),
-				Wiki:                 util.SliceContainsString(form.Events, string(webhook_module.HookEventWiki), true),
-				Repository:           util.SliceContainsString(form.Events, string(webhook_module.HookEventRepository), true),
-				Release:              util.SliceContainsString(form.Events, string(webhook_module.HookEventRelease), true),
-			},
+			HookEvents:   updateHookEvents(form.Events),
 			BranchFilter: form.BranchFilter,
 		},
 		IsActive: form.Active,
@@ -171,19 +231,19 @@ func addHook(ctx *context.APIContext, form *api.CreateHookOption, orgID, repoID 
 	}
 	err := w.SetHeaderAuthorization(form.AuthorizationHeader)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "SetHeaderAuthorization", err)
+		ctx.APIErrorInternal(err)
 		return nil, false
 	}
 	if w.Type == webhook_module.SLACK {
 		channel, ok := form.Config["channel"]
 		if !ok {
-			ctx.Error(http.StatusUnprocessableEntity, "", "Missing config option: channel")
+			ctx.APIError(http.StatusUnprocessableEntity, "Missing config option: channel")
 			return nil, false
 		}
 		channel = strings.TrimSpace(channel)
 
 		if !webhook_service.IsValidSlackChannel(channel) {
-			ctx.Error(http.StatusBadRequest, "", "Invalid slack channel name")
+			ctx.APIError(http.StatusBadRequest, "Invalid slack channel name")
 			return nil, false
 		}
 
@@ -194,17 +254,17 @@ func addHook(ctx *context.APIContext, form *api.CreateHookOption, orgID, repoID 
 			Color:    form.Config["color"],
 		})
 		if err != nil {
-			ctx.Error(http.StatusInternalServerError, "slack: JSON marshal failed", err)
+			ctx.APIErrorInternal(err)
 			return nil, false
 		}
 		w.Meta = string(meta)
 	}
 
 	if err := w.UpdateEvent(); err != nil {
-		ctx.Error(http.StatusInternalServerError, "UpdateEvent", err)
+		ctx.APIErrorInternal(err)
 		return nil, false
 	} else if err := webhook.CreateWebhook(ctx, w); err != nil {
-		ctx.Error(http.StatusInternalServerError, "CreateWebhook", err)
+		ctx.APIErrorInternal(err)
 		return nil, false
 	}
 	return w, true
@@ -214,41 +274,40 @@ func addHook(ctx *context.APIContext, form *api.CreateHookOption, orgID, repoID 
 func EditSystemHook(ctx *context.APIContext, form *api.EditHookOption, hookID int64) {
 	hook, err := webhook.GetSystemOrDefaultWebhook(ctx, hookID)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetSystemOrDefaultWebhook", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	if !editHook(ctx, form, hook) {
-		ctx.Error(http.StatusInternalServerError, "editHook", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	updated, err := webhook.GetSystemOrDefaultWebhook(ctx, hookID)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetSystemOrDefaultWebhook", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
-	h, err := webhook_service.ToHook(setting.AppURL+"/admin", updated)
+	h, err := webhook_service.ToHook(setting.AppURL+"/-/admin", updated)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "convert.ToHook", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	ctx.JSON(http.StatusOK, h)
 }
 
-// EditOrgHook edit webhook `w` according to `form`. Writes to `ctx` accordingly
-func EditOrgHook(ctx *context.APIContext, form *api.EditHookOption, hookID int64) {
-	org := ctx.Org.Organization
-	hook, err := GetOrgHook(ctx, org.ID, hookID)
+// EditOwnerHook updates a webhook of an user or organization
+func EditOwnerHook(ctx *context.APIContext, owner *user_model.User, form *api.EditHookOption, hookID int64) {
+	hook, err := GetOwnerHook(ctx, owner.ID, hookID)
 	if err != nil {
 		return
 	}
 	if !editHook(ctx, form, hook) {
 		return
 	}
-	updated, err := GetOrgHook(ctx, org.ID, hookID)
+	updated, err := GetOwnerHook(ctx, owner.ID, hookID)
 	if err != nil {
 		return
 	}
-	apiHook, ok := toAPIHook(ctx, org.AsUser().HomeLink(), updated)
+	apiHook, ok := toAPIHook(ctx, owner.HomeLink(), updated)
 	if !ok {
 		return
 	}
@@ -281,11 +340,15 @@ func EditRepoHook(ctx *context.APIContext, form *api.EditHookOption, hookID int6
 func editHook(ctx *context.APIContext, form *api.EditHookOption, w *webhook.Webhook) bool {
 	if form.Config != nil {
 		if url, ok := form.Config["url"]; ok {
+			if !validation.IsValidURL(url) {
+				ctx.APIError(http.StatusUnprocessableEntity, "Invalid url")
+				return false
+			}
 			w.URL = url
 		}
 		if ct, ok := form.Config["content_type"]; ok {
 			if !webhook.IsValidHookContentType(ct) {
-				ctx.Error(http.StatusUnprocessableEntity, "", "Invalid content type")
+				ctx.APIError(http.StatusUnprocessableEntity, "Invalid content type")
 				return false
 			}
 			w.ContentType = webhook.ToHookContentType(ct)
@@ -300,7 +363,7 @@ func editHook(ctx *context.APIContext, form *api.EditHookOption, w *webhook.Webh
 					Color:    form.Config["color"],
 				})
 				if err != nil {
-					ctx.Error(http.StatusInternalServerError, "slack: JSON marshal failed", err)
+					ctx.APIErrorInternal(err)
 					return false
 				}
 				w.Meta = string(meta)
@@ -309,46 +372,20 @@ func editHook(ctx *context.APIContext, form *api.EditHookOption, w *webhook.Webh
 	}
 
 	// Update events
-	if len(form.Events) == 0 {
-		form.Events = []string{"push"}
-	}
+	w.HookEvents = updateHookEvents(form.Events)
 	w.PushOnly = false
 	w.SendEverything = false
 	w.ChooseEvents = true
-	w.Create = util.SliceContainsString(form.Events, string(webhook_module.HookEventCreate), true)
-	w.Push = util.SliceContainsString(form.Events, string(webhook_module.HookEventPush), true)
-	w.Create = util.SliceContainsString(form.Events, string(webhook_module.HookEventCreate), true)
-	w.Delete = util.SliceContainsString(form.Events, string(webhook_module.HookEventDelete), true)
-	w.Fork = util.SliceContainsString(form.Events, string(webhook_module.HookEventFork), true)
-	w.Repository = util.SliceContainsString(form.Events, string(webhook_module.HookEventRepository), true)
-	w.Wiki = util.SliceContainsString(form.Events, string(webhook_module.HookEventWiki), true)
-	w.Release = util.SliceContainsString(form.Events, string(webhook_module.HookEventRelease), true)
 	w.BranchFilter = form.BranchFilter
 
 	err := w.SetHeaderAuthorization(form.AuthorizationHeader)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "SetHeaderAuthorization", err)
+		ctx.APIErrorInternal(err)
 		return false
 	}
 
-	// Issues
-	w.Issues = issuesHook(form.Events, "issues_only")
-	w.IssueAssign = issuesHook(form.Events, string(webhook_module.HookEventIssueAssign))
-	w.IssueLabel = issuesHook(form.Events, string(webhook_module.HookEventIssueLabel))
-	w.IssueMilestone = issuesHook(form.Events, string(webhook_module.HookEventIssueMilestone))
-	w.IssueComment = issuesHook(form.Events, string(webhook_module.HookEventIssueComment))
-
-	// Pull requests
-	w.PullRequest = pullHook(form.Events, "pull_request_only")
-	w.PullRequestAssign = pullHook(form.Events, string(webhook_module.HookEventPullRequestAssign))
-	w.PullRequestLabel = pullHook(form.Events, string(webhook_module.HookEventPullRequestLabel))
-	w.PullRequestMilestone = pullHook(form.Events, string(webhook_module.HookEventPullRequestMilestone))
-	w.PullRequestComment = pullHook(form.Events, string(webhook_module.HookEventPullRequestComment))
-	w.PullRequestReview = pullHook(form.Events, "pull_request_review")
-	w.PullRequestSync = pullHook(form.Events, string(webhook_module.HookEventPullRequestSync))
-
 	if err := w.UpdateEvent(); err != nil {
-		ctx.Error(http.StatusInternalServerError, "UpdateEvent", err)
+		ctx.APIErrorInternal(err)
 		return false
 	}
 
@@ -356,9 +393,26 @@ func editHook(ctx *context.APIContext, form *api.EditHookOption, w *webhook.Webh
 		w.IsActive = *form.Active
 	}
 
-	if err := webhook.UpdateWebhook(w); err != nil {
-		ctx.Error(http.StatusInternalServerError, "UpdateWebhook", err)
+	if form.Name != nil {
+		w.Name = strings.TrimSpace(*form.Name)
+	}
+
+	if err := webhook.UpdateWebhook(ctx, w); err != nil {
+		ctx.APIErrorInternal(err)
 		return false
 	}
 	return true
+}
+
+// DeleteOwnerHook deletes the hook owned by the owner.
+func DeleteOwnerHook(ctx *context.APIContext, owner *user_model.User, hookID int64) {
+	if err := webhook.DeleteWebhookByOwnerID(ctx, owner.ID, hookID); err != nil {
+		if webhook.IsErrWebhookNotExist(err) {
+			ctx.APIErrorNotFound()
+		} else {
+			ctx.APIErrorInternal(err)
+		}
+		return
+	}
+	ctx.Status(http.StatusNoContent)
 }

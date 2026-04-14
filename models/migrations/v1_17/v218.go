@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_17 //nolint
+package v1_17
 
 import (
 	"code.gitea.io/gitea/modules/setting"
@@ -48,5 +48,5 @@ func (*improveActionTableIndicesAction) TableIndices() []*schemas.Index {
 }
 
 func ImproveActionTableIndices(x *xorm.Engine) error {
-	return x.Sync2(&improveActionTableIndicesAction{})
+	return x.Sync(&improveActionTableIndicesAction{})
 }

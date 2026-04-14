@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_11 //nolint
+package v1_11
 
 import (
 	"xorm.io/xorm"
@@ -13,5 +13,5 @@ func AddCommentIDOnNotification(x *xorm.Engine) error {
 		CommentID int64
 	}
 
-	return x.Sync2(new(Notification))
+	return x.Sync(new(Notification))
 }

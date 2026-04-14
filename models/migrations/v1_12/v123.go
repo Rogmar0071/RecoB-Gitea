@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_12 //nolint
+package v1_12
 
 import (
 	"xorm.io/xorm"
@@ -13,5 +13,5 @@ func AddReactionOriginals(x *xorm.Engine) error {
 		OriginalAuthor   string
 	}
 
-	return x.Sync2(new(Reaction))
+	return x.Sync(new(Reaction))
 }

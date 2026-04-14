@@ -17,9 +17,9 @@ import (
 
 var (
 	// ErrHashMismatch occurs if the content has does not match OID
-	ErrHashMismatch = errors.New("Content hash does not match OID")
+	ErrHashMismatch = errors.New("content hash does not match OID")
 	// ErrSizeMismatch occurs if the content size does not match
-	ErrSizeMismatch = errors.New("Content size does not match")
+	ErrSizeMismatch = errors.New("content size does not match")
 )
 
 // ContentStore provides a simple file system based storage.
@@ -104,7 +104,7 @@ func (s *ContentStore) Verify(pointer Pointer) (bool, error) {
 }
 
 // ReadMetaObject will read a git_model.LFSMetaObject and return a reader
-func ReadMetaObject(pointer Pointer) (io.ReadCloser, error) {
+func ReadMetaObject(pointer Pointer) (storage.Object, error) {
 	contentStore := NewContentStore()
 	return contentStore.Get(pointer)
 }

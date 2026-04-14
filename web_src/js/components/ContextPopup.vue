@@ -1,115 +1,70 @@
+<script lang="ts" setup>
+import {SvgIcon} from '../svg.ts';
+import {GET} from '../modules/fetch.ts';
+import {getIssueColorClass, getIssueIcon} from '../features/issue.ts';
+import {computed, onMounted, shallowRef} from 'vue';
+import type {Issue} from '../types.ts';
+
+const props = defineProps<{
+  repoLink: string,
+  loadIssueInfoUrl: string,
+}>();
+
+const loading = shallowRef(false);
+const issue = shallowRef<Issue | null>(null);
+const renderedLabels = shallowRef('');
+const errorMessage = shallowRef('');
+
+const createdAt = computed(() => {
+  if (!issue?.value) return '';
+  return new Date(issue.value.created_at).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
+});
+
+const body = computed(() => {
+  if (!issue?.value) return '';
+  const body = issue.value.body.replace(/\n+/g, ' ');
+  return body.length > 85 ? `${body.substring(0, 85)}…` : body;
+});
+
+onMounted(async () => {
+  loading.value = true;
+  errorMessage.value = '';
+  try {
+    const resp = await GET(props.loadIssueInfoUrl);
+    if (!resp.ok) {
+      errorMessage.value = resp.status ? resp.statusText : 'Unknown network error';
+      return;
+    }
+    const respJson = await resp.json();
+    issue.value = respJson.convertedIssue;
+    renderedLabels.value = respJson.renderedLabels;
+  } finally {
+    loading.value = false;
+  }
+});
+</script>
+
 <template>
-  <div ref="root">
-    <div v-if="loading" class="ui active centered inline loader"/>
-    <div v-if="!loading && issue !== null">
-      <p><small>{{ issue.repository.full_name }} on {{ createdAt }}</small></p>
-      <p><svg-icon :name="icon" :class="[color]" /> <strong>{{ issue.title }}</strong> #{{ issue.number }}</p>
-      <p>{{ body }}</p>
-      <div>
-        <div
-          v-for="label in labels"
-          :key="label.name"
-          class="ui label"
-          :style="{ color: label.textColor, backgroundColor: label.color }"
-        >
-          {{ label.name }}
-        </div>
+  <div class="tw-p-4">
+    <div v-if="loading" class="tw-h-12 tw-w-12 is-loading"/>
+    <div v-else-if="issue" class="tw-flex tw-flex-col tw-gap-2">
+      <div class="tw-text-12">
+        <a :href="repoLink" class="muted">{{ issue.repository.full_name }}</a>
+        on {{ createdAt }}
       </div>
+      <div class="flex-text-block">
+        <svg-icon :name="getIssueIcon(issue)" :class="getIssueColorClass(issue)"/>
+        <span class="issue-title tw-font-semibold tw-break-anywhere">
+          {{ issue.title }}
+          <span class="index">#{{ issue.number }}</span>
+        </span>
+      </div>
+      <div v-if="body">{{ body }}</div>
+      <!-- eslint-disable-next-line vue/no-v-html -->
+      <div v-if="issue.labels.length" v-html="renderedLabels"/>
     </div>
-    <div v-if="!loading && issue === null">
-      <p><small>{{ i18nErrorOccurred }}</small></p>
-      <p>{{ i18nErrorMessage }}</p>
+    <div v-else>
+      {{ errorMessage }}
     </div>
   </div>
 </template>
-
-<script>
-import $ from 'jquery';
-import {SvgIcon} from '../svg.js';
-import {useLightTextOnBackground} from '../utils.js';
-
-const {appSubUrl, i18n} = window.config;
-
-export default {
-  components: {SvgIcon},
-  data: () => ({
-    loading: false,
-    issue: null,
-    i18nErrorOccurred: i18n.error_occurred,
-    i18nErrorMessage: null,
-  }),
-  computed: {
-    createdAt() {
-      return new Date(this.issue.created_at).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
-    },
-
-    body() {
-      const body = this.issue.body.replace(/\n+/g, ' ');
-      if (body.length > 85) {
-        return `${body.substring(0, 85)}…`;
-      }
-      return body;
-    },
-
-    icon() {
-      if (this.issue.pull_request !== null) {
-        if (this.issue.state === 'open') {
-          return 'octicon-git-pull-request'; // Open PR
-        } else if (this.issue.pull_request.merged === true) {
-          return 'octicon-git-merge'; // Merged PR
-        }
-        return 'octicon-git-pull-request'; // Closed PR
-      } else if (this.issue.state === 'open') {
-        return 'octicon-issue-opened'; // Open Issue
-      }
-      return 'octicon-issue-closed'; // Closed Issue
-    },
-
-    color() {
-      if (this.issue.state === 'open') {
-        return 'green';
-      } else if (this.issue.pull_request !== null && this.issue.pull_request.merged === true) {
-        return 'purple';
-      }
-      return 'red';
-    },
-
-    labels() {
-      return this.issue.labels.map((label) => {
-        let textColor;
-        if (useLightTextOnBackground(label.color)) {
-          textColor = '#eeeeee';
-        } else {
-          textColor = '#111111';
-        }
-        return {name: label.name, color: `#${label.color}`, textColor};
-      });
-    }
-  },
-  mounted() {
-    this.$refs.root.addEventListener('us-load-context-popup', (e) => {
-      const data = e.detail;
-      if (!this.loading && this.issue === null) {
-        this.load(data);
-      }
-    });
-  },
-  methods: {
-    load(data) {
-      this.loading = true;
-      this.i18nErrorMessage = null;
-      $.get(`${appSubUrl}/${data.owner}/${data.repo}/issues/${data.index}/info`).done((issue) => {
-        this.issue = issue;
-      }).fail((jqXHR) => {
-        if (jqXHR.responseJSON && jqXHR.responseJSON.message) {
-          this.i18nErrorMessage = jqXHR.responseJSON.message;
-        } else {
-          this.i18nErrorMessage = i18n.network_error;
-        }
-      }).always(() => {
-        this.loading = false;
-      });
-    }
-  }
-};
-</script>

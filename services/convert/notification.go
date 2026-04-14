@@ -4,16 +4,17 @@
 package convert
 
 import (
+	"context"
 	"net/url"
 
 	activities_model "code.gitea.io/gitea/models/activities"
-	"code.gitea.io/gitea/models/db"
-	"code.gitea.io/gitea/models/perm"
+	access_model "code.gitea.io/gitea/models/perm/access"
+	"code.gitea.io/gitea/modules/log"
 	api "code.gitea.io/gitea/modules/structs"
 )
 
 // ToNotificationThread convert a Notification to api.NotificationThread
-func ToNotificationThread(n *activities_model.Notification) *api.NotificationThread {
+func ToNotificationThread(ctx context.Context, n *activities_model.Notification) *api.NotificationThread {
 	result := &api.NotificationThread{
 		ID:        n.ID,
 		Unread:    !(n.Status == activities_model.NotificationStatusRead || n.Status == activities_model.NotificationStatusPinned),
@@ -24,11 +25,17 @@ func ToNotificationThread(n *activities_model.Notification) *api.NotificationThr
 
 	// since user only get notifications when he has access to use minimal access mode
 	if n.Repository != nil {
-		result.Repository = ToRepo(db.DefaultContext, n.Repository, perm.AccessModeRead)
-
-		// This permission is not correct and we should not be reporting it
-		for repository := result.Repository; repository != nil; repository = repository.Parent {
-			repository.Permissions = nil
+		perm, err := access_model.GetIndividualUserRepoPermission(ctx, n.Repository, n.User)
+		if err != nil {
+			log.Error("GetIndividualUserRepoPermission failed: %v", err)
+			return result
+		}
+		if perm.HasAnyUnitAccessOrPublicAccess() { // if user has been revoked access to repo, do not show repo info
+			result.Repository = ToRepo(ctx, n.Repository, perm)
+			// This permission is not correct and we should not be reporting it
+			for repository := result.Repository; repository != nil; repository = repository.Parent {
+				repository.Permissions = nil
+			}
 		}
 	}
 
@@ -38,31 +45,32 @@ func ToNotificationThread(n *activities_model.Notification) *api.NotificationThr
 		result.Subject = &api.NotificationSubject{Type: api.NotifySubjectIssue}
 		if n.Issue != nil {
 			result.Subject.Title = n.Issue.Title
-			result.Subject.URL = n.Issue.APIURL()
-			result.Subject.HTMLURL = n.Issue.HTMLURL()
-			result.Subject.State = n.Issue.State()
-			comment, err := n.Issue.GetLastComment()
+			result.Subject.URL = n.Issue.APIURL(ctx)
+			result.Subject.HTMLURL = n.Issue.HTMLURL(ctx)
+			result.Subject.State = api.NotifySubjectStateType(n.Issue.State())
+			comment, err := n.Issue.GetLastComment(ctx)
 			if err == nil && comment != nil {
-				result.Subject.LatestCommentURL = comment.APIURL()
-				result.Subject.LatestCommentHTMLURL = comment.HTMLURL()
+				result.Subject.LatestCommentURL = comment.APIURL(ctx)
+				result.Subject.LatestCommentHTMLURL = comment.HTMLURL(ctx)
 			}
 		}
 	case activities_model.NotificationSourcePullRequest:
 		result.Subject = &api.NotificationSubject{Type: api.NotifySubjectPull}
 		if n.Issue != nil {
 			result.Subject.Title = n.Issue.Title
-			result.Subject.URL = n.Issue.APIURL()
-			result.Subject.HTMLURL = n.Issue.HTMLURL()
-			result.Subject.State = n.Issue.State()
-			comment, err := n.Issue.GetLastComment()
+			result.Subject.URL = n.Issue.APIURL(ctx)
+			result.Subject.HTMLURL = n.Issue.HTMLURL(ctx)
+			result.Subject.State = api.NotifySubjectStateType(n.Issue.State())
+			comment, err := n.Issue.GetLastComment(ctx)
 			if err == nil && comment != nil {
-				result.Subject.LatestCommentURL = comment.APIURL()
-				result.Subject.LatestCommentHTMLURL = comment.HTMLURL()
+				result.Subject.LatestCommentURL = comment.APIURL(ctx)
+				result.Subject.LatestCommentHTMLURL = comment.HTMLURL(ctx)
 			}
 
-			pr, _ := n.Issue.GetPullRequest()
-			if pr != nil && pr.HasMerged {
-				result.Subject.State = "merged"
+			if err := n.Issue.LoadPullRequest(ctx); err == nil &&
+				n.Issue.PullRequest != nil &&
+				n.Issue.PullRequest.HasMerged {
+				result.Subject.State = api.NotifySubjectStateMerged
 			}
 		}
 	case activities_model.NotificationSourceCommit:
@@ -87,10 +95,10 @@ func ToNotificationThread(n *activities_model.Notification) *api.NotificationThr
 }
 
 // ToNotifications convert list of Notification to api.NotificationThread list
-func ToNotifications(nl activities_model.NotificationList) []*api.NotificationThread {
+func ToNotifications(ctx context.Context, nl activities_model.NotificationList) []*api.NotificationThread {
 	result := make([]*api.NotificationThread, 0, len(nl))
 	for _, n := range nl {
-		result = append(result, ToNotificationThread(n))
+		result = append(result, ToNotificationThread(ctx, n))
 	}
 	return result
 }

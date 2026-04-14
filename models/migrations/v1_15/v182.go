@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_15 //nolint
+package v1_15
 
 import (
 	"xorm.io/xorm"
@@ -20,7 +20,7 @@ func AddIssueResourceIndexTable(x *xorm.Engine) error {
 		return err
 	}
 
-	if err := sess.Table("issue_index").Sync2(new(ResourceIndex)); err != nil {
+	if err := sess.Table("issue_index").Sync(new(ResourceIndex)); err != nil {
 		return err
 	}
 

@@ -9,10 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"code.gitea.io/gitea/modules/setting"
+
 	"github.com/stretchr/testify/assert"
 )
 
 func TestHashedBuffer(t *testing.T) {
+	setting.AppDataPath = t.TempDir()
 	cases := []struct {
 		MaxMemorySize int
 		Data          string
@@ -26,7 +29,7 @@ func TestHashedBuffer(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		buf, err := CreateHashedBufferFromReader(strings.NewReader(c.Data), c.MaxMemorySize)
+		buf, err := CreateHashedBufferFromReaderWithSize(strings.NewReader(c.Data), c.MaxMemorySize)
 		assert.NoError(t, err)
 
 		assert.EqualValues(t, len(c.Data), buf.Size())

@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import (
 	"crypto/sha1"
@@ -21,7 +21,7 @@ func AddCommitStatusContext(x *xorm.Engine) error {
 		Context     string `xorm:"TEXT"`
 	}
 
-	if err := x.Sync2(new(CommitStatus)); err != nil {
+	if err := x.Sync(new(CommitStatus)); err != nil {
 		return err
 	}
 

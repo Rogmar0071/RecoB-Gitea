@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -34,5 +34,5 @@ func AddTaskTable(x *xorm.Engine) error {
 		Status int `xorm:"NOT NULL DEFAULT 0"`
 	}
 
-	return x.Sync2(new(Task), new(Repository))
+	return x.Sync(new(Task), new(Repository))
 }

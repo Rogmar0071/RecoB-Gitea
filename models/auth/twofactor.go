@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -110,33 +111,33 @@ func (t *TwoFactor) SetSecret(secretString string) error {
 func (t *TwoFactor) ValidateTOTP(passcode string) (bool, error) {
 	decodedStoredSecret, err := base64.StdEncoding.DecodeString(t.Secret)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ValidateTOTP invalid base64: %w", err)
 	}
 	secretBytes, err := secret.AesDecrypt(t.getEncryptionKey(), decodedStoredSecret)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ValidateTOTP unable to decrypt (maybe SECRET_KEY is wrong): %w", err)
 	}
 	secretStr := string(secretBytes)
 	return totp.Validate(passcode, secretStr), nil
 }
 
 // NewTwoFactor creates a new two-factor authentication token.
-func NewTwoFactor(t *TwoFactor) error {
-	_, err := db.GetEngine(db.DefaultContext).Insert(t)
+func NewTwoFactor(ctx context.Context, t *TwoFactor) error {
+	_, err := db.GetEngine(ctx).Insert(t)
 	return err
 }
 
 // UpdateTwoFactor updates a two-factor authentication token.
-func UpdateTwoFactor(t *TwoFactor) error {
-	_, err := db.GetEngine(db.DefaultContext).ID(t.ID).AllCols().Update(t)
+func UpdateTwoFactor(ctx context.Context, t *TwoFactor) error {
+	_, err := db.GetEngine(ctx).ID(t.ID).AllCols().Update(t)
 	return err
 }
 
 // GetTwoFactorByUID returns the two-factor authentication token associated with
 // the user, if any.
-func GetTwoFactorByUID(uid int64) (*TwoFactor, error) {
+func GetTwoFactorByUID(ctx context.Context, uid int64) (*TwoFactor, error) {
 	twofa := &TwoFactor{}
-	has, err := db.GetEngine(db.DefaultContext).Where("uid=?", uid).Get(twofa)
+	has, err := db.GetEngine(ctx).Where("uid=?", uid).Get(twofa)
 	if err != nil {
 		return nil, err
 	} else if !has {
@@ -147,13 +148,13 @@ func GetTwoFactorByUID(uid int64) (*TwoFactor, error) {
 
 // HasTwoFactorByUID returns the two-factor authentication token associated with
 // the user, if any.
-func HasTwoFactorByUID(uid int64) (bool, error) {
-	return db.GetEngine(db.DefaultContext).Where("uid=?", uid).Exist(&TwoFactor{})
+func HasTwoFactorByUID(ctx context.Context, uid int64) (bool, error) {
+	return db.GetEngine(ctx).Where("uid=?", uid).Exist(&TwoFactor{})
 }
 
 // DeleteTwoFactorByID deletes two-factor authentication token by given ID.
-func DeleteTwoFactorByID(id, userID int64) error {
-	cnt, err := db.GetEngine(db.DefaultContext).ID(id).Delete(&TwoFactor{
+func DeleteTwoFactorByID(ctx context.Context, id, userID int64) error {
+	cnt, err := db.GetEngine(ctx).ID(id).Delete(&TwoFactor{
 		UID: userID,
 	})
 	if err != nil {
@@ -162,4 +163,14 @@ func DeleteTwoFactorByID(id, userID int64) error {
 		return ErrTwoFactorNotEnrolled{userID}
 	}
 	return nil
+}
+
+func HasTwoFactorOrWebAuthn(ctx context.Context, id int64) (bool, error) {
+	has, err := HasTwoFactorByUID(ctx, id)
+	if err != nil {
+		return false, err
+	} else if has {
+		return true, nil
+	}
+	return HasWebAuthnRegistrationsByUID(ctx, id)
 }

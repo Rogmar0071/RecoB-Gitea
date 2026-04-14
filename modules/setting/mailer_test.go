@@ -6,19 +6,19 @@ package setting
 import (
 	"testing"
 
+	"code.gitea.io/gitea/modules/test"
+
 	"github.com/stretchr/testify/assert"
-	ini "gopkg.in/ini.v1"
 )
 
 func Test_loadMailerFrom(t *testing.T) {
-	iniFile := ini.Empty()
 	kases := map[string]*Mailer{
-		"smtp.mydomain.com": {
-			SMTPAddr: "smtp.mydomain.com",
+		"smtp.mydomain.test": {
+			SMTPAddr: "smtp.mydomain.test",
 			SMTPPort: "465",
 		},
-		"smtp.mydomain.com:123": {
-			SMTPAddr: "smtp.mydomain.com",
+		"smtp.mydomain.test:123": {
+			SMTPAddr: "smtp.mydomain.test",
 			SMTPPort: "123",
 		},
 		":123": {
@@ -28,16 +28,43 @@ func Test_loadMailerFrom(t *testing.T) {
 	}
 	for host, kase := range kases {
 		t.Run(host, func(t *testing.T) {
-			iniFile.DeleteSection("mailer")
-			sec := iniFile.Section("mailer")
+			cfg, _ := NewConfigProviderFromData("")
+			sec := cfg.Section("mailer")
 			sec.NewKey("ENABLED", "true")
 			sec.NewKey("HOST", host)
 
 			// Check mailer setting
-			loadMailerFrom(iniFile)
+			loadMailerFrom(cfg)
 
-			assert.EqualValues(t, kase.SMTPAddr, MailService.SMTPAddr)
-			assert.EqualValues(t, kase.SMTPPort, MailService.SMTPPort)
+			assert.Equal(t, kase.SMTPAddr, MailService.SMTPAddr)
+			assert.Equal(t, kase.SMTPPort, MailService.SMTPPort)
 		})
 	}
+}
+
+func TestLoadSettingsForInstallMailServiceFlags(t *testing.T) {
+	defer test.MockVariableValue(&Service)()
+	defer test.MockVariableValue(&MailService)()
+
+	cfg, err := NewConfigProviderFromData(`
+[database]
+DB_TYPE = postgres
+
+[mailer]
+ENABLED = true
+SMTP_ADDR = 127.0.0.1
+SMTP_PORT = 465
+FROM = noreply@example.com
+
+[service]
+REGISTER_EMAIL_CONFIRM = true
+ENABLE_NOTIFY_MAIL = true
+`)
+	assert.NoError(t, err)
+	loadDBSetting(cfg)
+	loadServiceFrom(cfg)
+	loadMailsFrom(cfg)
+
+	assert.True(t, Service.RegisterEmailConfirm)
+	assert.True(t, Service.EnableNotifyMail)
 }

@@ -1,24 +1,12 @@
 {{template "base/head" .}}
 <div role="main" aria-label="{{.Title}}" class="page-content repository forks">
 	{{template "repo/header" .}}
-	<div class="ui container">
+	<div class="ui container fork-list">
 		<h2 class="ui dividing header">
-			{{.locale.Tr "repo.forks"}}
+			{{ctx.Locale.Tr "repo.forks"}}
 		</h2>
-		<div class="ui list">
-			{{range .Forks}}
-				<div class="item">
-					{{avatar $.Context .Owner}}
-					<div class="link">
-						<a href="{{.Owner.HomeLink}}">{{.Owner.Name}}</a>
-						/
-						<a href="{{.Link}}">{{.Name}}</a>
-					</div>
-				</div>
-			{{end}}
-		</div>
+		{{template "shared/repo/list" .}}
+		{{template "base/paginate" .}}
 	</div>
-
-	{{template "base/paginate" .}}
 </div>
 {{template "base/footer" .}}

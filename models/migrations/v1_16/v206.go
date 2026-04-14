@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"fmt"
@@ -18,7 +18,7 @@ func AddAuthorizeColForTeamUnit(x *xorm.Engine) error {
 		AccessMode int
 	}
 
-	if err := x.Sync2(new(TeamUnit)); err != nil {
+	if err := x.Sync(new(TeamUnit)); err != nil {
 		return fmt.Errorf("sync2: %w", err)
 	}
 

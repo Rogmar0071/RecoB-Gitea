@@ -1,30 +1,50 @@
-#Build stage
-FROM docker.io/library/golang:1.20-alpine3.17 AS build-env
+# syntax=docker/dockerfile:1
+# Build frontend on the native platform to avoid QEMU-related issues with nodejs ecosystem
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-alpine3.23 AS frontend-build
+RUN apk --no-cache add build-base git nodejs pnpm
+WORKDIR /src
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
+COPY --exclude=.git/ . .
+RUN make frontend
 
-ARG GOPROXY
-ENV GOPROXY ${GOPROXY:-direct}
+# Build backend for each target platform
+FROM docker.io/library/golang:1.26-alpine3.23 AS build-env
 
 ARG GITEA_VERSION
 ARG TAGS="sqlite sqlite_unlock_notify"
-ENV TAGS "bindata timetzdata $TAGS"
+ENV TAGS="bindata timetzdata $TAGS"
 ARG CGO_EXTRA_CFLAGS
 
-#Build deps
-RUN apk --no-cache add build-base git nodejs npm
+# Build deps
+RUN apk --no-cache add \
+    build-base \
+    git
 
-#Setup repo
-COPY . ${GOPATH}/src/code.gitea.io/gitea
 WORKDIR ${GOPATH}/src/code.gitea.io/gitea
+COPY go.mod go.sum ./
+RUN go mod download
+# Use COPY instead of bind mount as read-only one breaks makefile state tracking and read-write one needs binary to be moved as it's discarded.
+# ".git" directory is mounted separately later only for version data extraction.
+COPY --exclude=.git/ . .
+COPY --from=frontend-build /src/public/assets public/assets
 
-#Checkout version if set
-RUN if [ -n "${GITEA_VERSION}" ]; then git checkout "${GITEA_VERSION}"; fi \
- && make clean-all build
+# Build gitea, .git mount is required for version data
+RUN --mount=type=cache,target="/root/.cache/go-build" \
+    --mount=type=bind,source=".git/",target=".git/" \
+    make backend
 
-# Begin env-to-ini build
-RUN go build contrib/environment-to-ini/environment-to-ini.go
+COPY docker/root /tmp/local
 
-FROM docker.io/library/alpine:3.17
-LABEL maintainer="maintainers@gitea.io"
+# Set permissions for builds that made under windows which strips the executable bit from file
+RUN chmod 755 /tmp/local/usr/bin/entrypoint \
+              /tmp/local/usr/local/bin/* \
+              /tmp/local/etc/s6/gitea/* \
+              /tmp/local/etc/s6/openssh/* \
+              /tmp/local/etc/s6/.s6-svscan/* \
+              /go/src/code.gitea.io/gitea/gitea
+
+FROM docker.io/library/alpine:3.23 AS gitea
 
 EXPOSE 22 3000
 
@@ -53,18 +73,14 @@ RUN addgroup \
     git && \
   echo "git:*" | chpasswd -e
 
-ENV USER git
-ENV GITEA_CUSTOM /data/gitea
+COPY --from=build-env /tmp/local /
+COPY --from=build-env /go/src/code.gitea.io/gitea/gitea /app/gitea/gitea
+
+ENV USER=git
+ENV GITEA_CUSTOM=/data/gitea
 
 VOLUME ["/data"]
 
+# HINT: HEALTH-CHECK-ENDPOINT: don't use HEALTHCHECK, search this hint keyword for more information
 ENTRYPOINT ["/usr/bin/entrypoint"]
-CMD ["/bin/s6-svscan", "/etc/s6"]
-
-COPY docker/root /
-COPY --from=build-env /go/src/code.gitea.io/gitea/gitea /app/gitea/gitea
-COPY --from=build-env /go/src/code.gitea.io/gitea/environment-to-ini /usr/local/bin/environment-to-ini
-COPY --from=build-env /go/src/code.gitea.io/gitea/contrib/autocompletion/bash_autocomplete /etc/profile.d/gitea_bash_autocomplete.sh
-RUN chmod 755 /usr/bin/entrypoint /app/gitea/gitea /usr/local/bin/gitea /usr/local/bin/environment-to-ini
-RUN chmod 755 /etc/s6/gitea/* /etc/s6/openssh/* /etc/s6/.s6-svscan/*
-RUN chmod 644 /etc/profile.d/gitea_bash_autocomplete.sh
+CMD ["/usr/bin/s6-svscan", "/etc/s6"]

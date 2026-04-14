@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_14 //nolint
+package v1_14
 
 import (
 	"code.gitea.io/gitea/models/migrations/base"
@@ -39,7 +39,7 @@ func ConvertWebhookTaskTypeToString(x *xorm.Engine) error {
 	type Webhook struct {
 		Type string `xorm:"char(16) index"`
 	}
-	if err := x.Sync2(new(Webhook)); err != nil {
+	if err := x.Sync(new(Webhook)); err != nil {
 		return err
 	}
 

@@ -24,20 +24,20 @@ func (users UserList) GetUserIDs() []int64 {
 	return userIDs
 }
 
-// GetTwoFaStatus return state of 2FA enrollement
-func (users UserList) GetTwoFaStatus() map[int64]bool {
+// GetTwoFaStatus return state of 2FA enrollment
+func (users UserList) GetTwoFaStatus(ctx context.Context) map[int64]bool {
 	results := make(map[int64]bool, len(users))
 	for _, user := range users {
 		results[user.ID] = false // Set default to false
 	}
 
-	if tokenMaps, err := users.loadTwoFactorStatus(db.DefaultContext); err == nil {
+	if tokenMaps, err := users.loadTwoFactorStatus(ctx); err == nil {
 		for _, token := range tokenMaps {
 			results[token.UID] = true
 		}
 	}
 
-	if ids, err := users.userIDsWithWebAuthn(db.DefaultContext); err == nil {
+	if ids, err := users.userIDsWithWebAuthn(ctx); err == nil {
 		for _, id := range ids {
 			results[id] = true
 		}
@@ -48,7 +48,7 @@ func (users UserList) GetTwoFaStatus() map[int64]bool {
 
 func (users UserList) loadTwoFactorStatus(ctx context.Context) (map[int64]*auth.TwoFactor, error) {
 	if len(users) == 0 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // returns nil when there are no users
 	}
 
 	userIDs := users.GetUserIDs()
@@ -71,12 +71,12 @@ func (users UserList) userIDsWithWebAuthn(ctx context.Context) ([]int64, error) 
 }
 
 // GetUsersByIDs returns all resolved users from a list of Ids.
-func GetUsersByIDs(ids []int64) (UserList, error) {
+func GetUsersByIDs(ctx context.Context, ids []int64) (UserList, error) {
 	ous := make([]*User, 0, len(ids))
 	if len(ids) == 0 {
 		return ous, nil
 	}
-	err := db.GetEngine(db.DefaultContext).In("id", ids).
+	err := db.GetEngine(ctx).In("id", ids).
 		Asc("name").
 		Find(&ous)
 	return ous, err

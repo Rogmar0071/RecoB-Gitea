@@ -4,6 +4,8 @@
 package session
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"sync"
 
@@ -17,11 +19,15 @@ import (
 type DBStore struct {
 	sid  string
 	lock sync.RWMutex
-	data map[interface{}]interface{}
+	data map[any]any
+}
+
+func dbContext() context.Context {
+	return context.Background()
 }
 
 // NewDBStore creates and returns a DB session store.
-func NewDBStore(sid string, kv map[interface{}]interface{}) *DBStore {
+func NewDBStore(sid string, kv map[any]any) *DBStore {
 	return &DBStore{
 		sid:  sid,
 		data: kv,
@@ -29,7 +35,7 @@ func NewDBStore(sid string, kv map[interface{}]interface{}) *DBStore {
 }
 
 // Set sets value to given key in session.
-func (s *DBStore) Set(key, val interface{}) error {
+func (s *DBStore) Set(key, val any) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -38,7 +44,7 @@ func (s *DBStore) Set(key, val interface{}) error {
 }
 
 // Get gets value by given key in session.
-func (s *DBStore) Get(key interface{}) interface{} {
+func (s *DBStore) Get(key any) any {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
@@ -46,7 +52,7 @@ func (s *DBStore) Get(key interface{}) interface{} {
 }
 
 // Delete delete a key from session.
-func (s *DBStore) Delete(key interface{}) error {
+func (s *DBStore) Delete(key any) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -71,7 +77,7 @@ func (s *DBStore) Release() error {
 		return err
 	}
 
-	return auth.UpdateSession(s.sid, data)
+	return auth.UpdateSession(dbContext(), s.sid, data)
 }
 
 // Flush deletes all session data.
@@ -79,7 +85,7 @@ func (s *DBStore) Flush() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	s.data = make(map[interface{}]interface{})
+	s.data = make(map[any]any)
 	return nil
 }
 
@@ -97,14 +103,14 @@ func (p *DBProvider) Init(maxLifetime int64, connStr string) error {
 
 // Read returns raw session store by session ID.
 func (p *DBProvider) Read(sid string) (session.RawStore, error) {
-	s, err := auth.ReadSession(sid)
+	s, err := auth.ReadSession(dbContext(), sid)
 	if err != nil {
 		return nil, err
 	}
 
-	var kv map[interface{}]interface{}
+	var kv map[any]any
 	if len(s.Data) == 0 || s.Expiry.Add(p.maxLifetime) <= timeutil.TimeStampNow() {
-		kv = make(map[interface{}]interface{})
+		kv = make(map[any]any)
 	} else {
 		kv, err = session.DecodeGob(s.Data)
 		if err != nil {
@@ -116,29 +122,29 @@ func (p *DBProvider) Read(sid string) (session.RawStore, error) {
 }
 
 // Exist returns true if session with given ID exists.
-func (p *DBProvider) Exist(sid string) bool {
-	has, err := auth.ExistSession(sid)
+func (p *DBProvider) Exist(sid string) (bool, error) {
+	has, err := auth.ExistSession(dbContext(), sid)
 	if err != nil {
-		panic("session/DB: error checking existence: " + err.Error())
+		return false, fmt.Errorf("session/DB: error checking existence: %w", err)
 	}
-	return has
+	return has, nil
 }
 
 // Destroy deletes a session by session ID.
 func (p *DBProvider) Destroy(sid string) error {
-	return auth.DestroySession(sid)
+	return auth.DestroySession(dbContext(), sid)
 }
 
 // Regenerate regenerates a session store from old session ID to new one.
 func (p *DBProvider) Regenerate(oldsid, sid string) (_ session.RawStore, err error) {
-	s, err := auth.RegenerateSession(oldsid, sid)
+	s, err := auth.RegenerateSession(dbContext(), oldsid, sid)
 	if err != nil {
 		return nil, err
 	}
 
-	var kv map[interface{}]interface{}
+	var kv map[any]any
 	if len(s.Data) == 0 || s.Expiry.Add(p.maxLifetime) <= timeutil.TimeStampNow() {
-		kv = make(map[interface{}]interface{})
+		kv = make(map[any]any)
 	} else {
 		kv, err = session.DecodeGob(s.Data)
 		if err != nil {
@@ -150,17 +156,17 @@ func (p *DBProvider) Regenerate(oldsid, sid string) (_ session.RawStore, err err
 }
 
 // Count counts and returns number of sessions.
-func (p *DBProvider) Count() int {
-	total, err := auth.CountSessions()
+func (p *DBProvider) Count() (int, error) {
+	total, err := auth.CountSessions(dbContext())
 	if err != nil {
-		panic("session/DB: error counting records: " + err.Error())
+		return 0, fmt.Errorf("session/DB: error counting records: %w", err)
 	}
-	return int(total)
+	return int(total), nil
 }
 
 // GC calls GC to clean expired sessions.
 func (p *DBProvider) GC() {
-	if err := auth.CleanupSessions(p.maxLifetime); err != nil {
+	if err := auth.CleanupSessions(dbContext(), p.maxLifetime); err != nil {
 		log.Printf("session/DB: error garbage collecting: %v", err)
 	}
 }

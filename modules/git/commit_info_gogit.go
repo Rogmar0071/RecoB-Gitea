@@ -16,7 +16,7 @@ import (
 )
 
 // GetCommitsInfo gets information of all commits that are corresponding to these entries
-func (tes Entries) GetCommitsInfo(ctx context.Context, commit *Commit, treePath string) ([]CommitInfo, *Commit, error) {
+func (tes Entries) GetCommitsInfo(ctx context.Context, repoLink string, commit *Commit, treePath string) ([]CommitInfo, *Commit, error) {
 	entryPaths := make([]string, len(tes)+1)
 	// Get the commit for the treePath itself
 	entryPaths[0] = ""
@@ -29,7 +29,7 @@ func (tes Entries) GetCommitsInfo(ctx context.Context, commit *Commit, treePath 
 		defer commitGraphFile.Close()
 	}
 
-	c, err := commitNodeIndex.Get(commit.ID)
+	c, err := commitNodeIndex.Get(plumbing.Hash(commit.ID.RawValue()))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -71,22 +71,12 @@ func (tes Entries) GetCommitsInfo(ctx context.Context, commit *Commit, treePath 
 			commitsInfo[i].Commit = entryCommit
 		}
 
-		// If the entry if a submodule add a submodule file for this
+		// If the entry is a submodule, add a submodule file for this
 		if entry.IsSubModule() {
-			subModuleURL := ""
-			var fullPath string
-			if len(treePath) > 0 {
-				fullPath = treePath + "/" + entry.Name()
-			} else {
-				fullPath = entry.Name()
-			}
-			if subModule, err := commit.GetSubModule(fullPath); err != nil {
+			commitsInfo[i].SubmoduleFile, err = GetCommitInfoSubmoduleFile(repoLink, path.Join(treePath, entry.Name()), commit, entry.ID)
+			if err != nil {
 				return nil, nil, err
-			} else if subModule != nil {
-				subModuleURL = subModule.URL
 			}
-			subModuleFile := NewSubModuleFile(commitsInfo[i].Commit, subModuleURL, entry.ID.String())
-			commitsInfo[i].SubModuleFile = subModuleFile
 		}
 	}
 
@@ -177,7 +167,7 @@ func GetLastCommitForPaths(ctx context.Context, cache *LastCommitCache, c cgobje
 	refSha := c.ID().String()
 
 	// We do a tree traversal with nodes sorted by commit time
-	heap := binaryheap.NewWith(func(a, b interface{}) int {
+	heap := binaryheap.NewWith(func(a, b any) int {
 		if a.(*commitAndPaths).commit.CommitTime().Before(b.(*commitAndPaths).commit.CommitTime()) {
 			return 1
 		}

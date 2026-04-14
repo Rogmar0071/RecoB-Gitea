@@ -246,21 +246,30 @@ type TypedValue[T any] struct {
 }
 
 type FeedEntryProperties struct {
-	Version                  string                `xml:"d:Version"`
-	NormalizedVersion        string                `xml:"d:NormalizedVersion"`
 	Authors                  string                `xml:"d:Authors"`
+	Copyright                string                `xml:"d:Copyright,omitempty"`
+	Created                  TypedValue[time.Time] `xml:"d:Created"`
 	Dependencies             string                `xml:"d:Dependencies"`
 	Description              string                `xml:"d:Description"`
-	VersionDownloadCount     TypedValue[int64]     `xml:"d:VersionDownloadCount"`
+	DevelopmentDependency    TypedValue[bool]      `xml:"d:DevelopmentDependency"`
 	DownloadCount            TypedValue[int64]     `xml:"d:DownloadCount"`
-	PackageSize              TypedValue[int64]     `xml:"d:PackageSize"`
-	Created                  TypedValue[time.Time] `xml:"d:Created"`
+	ID                       string                `xml:"d:Id"`
+	IconURL                  string                `xml:"d:IconUrl,omitempty"`
+	Language                 string                `xml:"d:Language,omitempty"`
 	LastUpdated              TypedValue[time.Time] `xml:"d:LastUpdated"`
-	Published                TypedValue[time.Time] `xml:"d:Published"`
+	LicenseURL               string                `xml:"d:LicenseUrl,omitempty"`
+	MinClientVersion         string                `xml:"d:MinClientVersion,omitempty"`
+	NormalizedVersion        string                `xml:"d:NormalizedVersion"`
+	Owners                   string                `xml:"d:Owners,omitempty"`
+	PackageSize              TypedValue[int64]     `xml:"d:PackageSize"`
 	ProjectURL               string                `xml:"d:ProjectUrl,omitempty"`
+	Published                TypedValue[time.Time] `xml:"d:Published"`
 	ReleaseNotes             string                `xml:"d:ReleaseNotes,omitempty"`
 	RequireLicenseAcceptance TypedValue[bool]      `xml:"d:RequireLicenseAcceptance"`
-	Title                    string                `xml:"d:Title"`
+	Tags                     string                `xml:"d:Tags,omitempty"`
+	Title                    string                `xml:"d:Title,omitempty"`
+	Version                  string                `xml:"d:Version"`
+	VersionDownloadCount     TypedValue[int64]     `xml:"d:VersionDownloadCount"`
 }
 
 type FeedEntry struct {
@@ -289,7 +298,7 @@ type FeedResponse struct {
 	ID      string             `xml:"id"`
 	Title   TypedValue[string] `xml:"title"`
 	Updated time.Time          `xml:"updated"`
-	Link    FeedEntryLink      `xml:"link"`
+	Links   []FeedEntryLink    `xml:"link"`
 	Entries []*FeedEntry       `xml:"entry"`
 	Count   int64              `xml:"m:count"`
 }
@@ -300,6 +309,16 @@ func createFeedResponse(l *linkBuilder, totalEntries int64, pds []*packages_mode
 		entries = append(entries, createEntry(l, pd, false))
 	}
 
+	links := []FeedEntryLink{
+		{Rel: "self", Href: l.Base},
+	}
+	if l.Next != nil {
+		links = append(links, FeedEntryLink{
+			Rel:  "next",
+			Href: l.GetNextURL(),
+		})
+	}
+
 	return &FeedResponse{
 		Xmlns:   "http://www.w3.org/2005/Atom",
 		Base:    l.Base,
@@ -307,7 +326,7 @@ func createFeedResponse(l *linkBuilder, totalEntries int64, pds []*packages_mode
 		XmlnsM:  "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata",
 		ID:      "http://schemas.datacontract.org/2004/07/",
 		Updated: time.Now(),
-		Link:    FeedEntryLink{Rel: "self", Href: l.Base},
+		Links:   links,
 		Count:   totalEntries,
 		Entries: entries,
 	}
@@ -343,21 +362,30 @@ func createEntry(l *linkBuilder, pd *packages_model.PackageDescriptor, withNames
 		Author:  metadata.Authors,
 		Content: content,
 		Properties: &FeedEntryProperties{
-			Version:                  pd.Version.Version,
-			NormalizedVersion:        pd.Version.Version,
 			Authors:                  metadata.Authors,
+			Copyright:                metadata.Copyright,
+			Created:                  createdValue,
 			Dependencies:             buildDependencyString(metadata),
 			Description:              metadata.Description,
-			VersionDownloadCount:     TypedValue[int64]{Type: "Edm.Int64", Value: pd.Version.DownloadCount},
+			DevelopmentDependency:    TypedValue[bool]{Type: "Edm.Boolean", Value: metadata.DevelopmentDependency},
 			DownloadCount:            TypedValue[int64]{Type: "Edm.Int64", Value: pd.Version.DownloadCount},
-			PackageSize:              TypedValue[int64]{Type: "Edm.Int64", Value: pd.CalculateBlobSize()},
-			Created:                  createdValue,
+			ID:                       pd.Package.Name,
+			IconURL:                  metadata.IconURL,
+			Language:                 metadata.Language,
 			LastUpdated:              createdValue,
-			Published:                createdValue,
+			LicenseURL:               metadata.LicenseURL,
+			MinClientVersion:         metadata.MinClientVersion,
+			NormalizedVersion:        pd.Version.Version,
+			Owners:                   metadata.Owners,
+			PackageSize:              TypedValue[int64]{Type: "Edm.Int64", Value: pd.CalculateBlobSize()},
 			ProjectURL:               metadata.ProjectURL,
+			Published:                createdValue,
 			ReleaseNotes:             metadata.ReleaseNotes,
 			RequireLicenseAcceptance: TypedValue[bool]{Type: "Edm.Boolean", Value: metadata.RequireLicenseAcceptance},
-			Title:                    pd.Package.Name,
+			Tags:                     metadata.Tags,
+			Title:                    metadata.Title,
+			Version:                  pd.Version.Version,
+			VersionDownloadCount:     TypedValue[int64]{Type: "Edm.Int64", Value: pd.Version.DownloadCount},
 		},
 	}
 

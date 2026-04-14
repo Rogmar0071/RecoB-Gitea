@@ -7,37 +7,30 @@
 package git
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"path/filepath"
+	"sync"
 
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/util"
 )
+
+const isGogit = false
 
 // Repository represents a Git repository.
 type Repository struct {
 	Path string
 
-	tagCache *ObjectCache
+	tagCache *ObjectCache[*Tag]
 
-	gpgSettings *GPGSettings
-
-	batchCancel context.CancelFunc
-	batchReader *bufio.Reader
-	batchWriter WriteCloserError
-
-	checkCancel context.CancelFunc
-	checkReader *bufio.Reader
-	checkWriter WriteCloserError
+	mu                 sync.Mutex
+	catFileBatchCloser CatFileBatchCloser
+	catFileBatchInUse  bool
 
 	Ctx             context.Context
 	LastCommitCache *LastCommitCache
-}
 
-// openRepositoryWithDefaultContext opens the repository at the given path with DefaultContext.
-func openRepositoryWithDefaultContext(repoPath string) (*Repository, error) {
-	return OpenRepository(DefaultContext, repoPath)
+	objectFormat ObjectFormat
 }
 
 // OpenRepository opens the repository at the given path with the provided context.
@@ -45,63 +38,65 @@ func OpenRepository(ctx context.Context, repoPath string) (*Repository, error) {
 	repoPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return nil, err
-	} else if !isDir(repoPath) {
-		return nil, errors.New("no such file or directory")
 	}
-
-	// Now because of some insanity with git cat-file not immediately failing if not run in a valid git directory we need to run git rev-parse first!
-	if err := EnsureValidGitRepository(ctx, repoPath); err != nil {
+	exist, err := util.IsDir(repoPath)
+	if err != nil {
 		return nil, err
 	}
+	if !exist {
+		return nil, util.NewNotExistErrorf("no such file or directory")
+	}
 
-	repo := &Repository{
+	return &Repository{
 		Path:     repoPath,
-		tagCache: newObjectCache(),
+		tagCache: newObjectCache[*Tag](),
 		Ctx:      ctx,
-	}
-
-	repo.batchWriter, repo.batchReader, repo.batchCancel = CatFileBatch(ctx, repoPath)
-	repo.checkWriter, repo.checkReader, repo.checkCancel = CatFileBatchCheck(ctx, repo.Path)
-
-	return repo, nil
+	}, nil
 }
 
-// CatFileBatch obtains a CatFileBatch for this repository
-func (repo *Repository) CatFileBatch(ctx context.Context) (WriteCloserError, *bufio.Reader, func()) {
-	if repo.batchCancel == nil || repo.batchReader.Buffered() > 0 {
-		log.Debug("Opening temporary cat file batch for: %s", repo.Path)
-		return CatFileBatch(ctx, repo.Path)
+// CatFileBatch obtains a "batch object provider" for this repository.
+// It reuses an existing one if available, otherwise creates a new one.
+func (repo *Repository) CatFileBatch(ctx context.Context) (_ CatFileBatch, closeFunc func(), err error) {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	if repo.catFileBatchCloser == nil {
+		repo.catFileBatchCloser, err = NewBatch(ctx, repo.Path)
+		if err != nil {
+			repo.catFileBatchCloser = nil // otherwise it is "interface(nil)" and will cause wrong logic
+			return nil, nil, err
+		}
 	}
-	return repo.batchWriter, repo.batchReader, func() {}
+
+	if !repo.catFileBatchInUse {
+		repo.catFileBatchInUse = true
+		return CatFileBatch(repo.catFileBatchCloser), func() {
+			repo.mu.Lock()
+			defer repo.mu.Unlock()
+			repo.catFileBatchInUse = false
+		}, nil
+	}
+
+	log.Debug("Opening temporary cat file batch for: %s", repo.Path)
+	tempBatch, err := NewBatch(ctx, repo.Path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tempBatch, tempBatch.Close, nil
 }
 
-// CatFileBatchCheck obtains a CatFileBatchCheck for this repository
-func (repo *Repository) CatFileBatchCheck(ctx context.Context) (WriteCloserError, *bufio.Reader, func()) {
-	if repo.checkCancel == nil || repo.checkReader.Buffered() > 0 {
-		log.Debug("Opening temporary cat file batch-check: %s", repo.Path)
-		return CatFileBatchCheck(ctx, repo.Path)
-	}
-	return repo.checkWriter, repo.checkReader, func() {}
-}
-
-// Close this repository, in particular close the underlying gogitStorage if this is not nil
-func (repo *Repository) Close() (err error) {
+func (repo *Repository) Close() error {
 	if repo == nil {
-		return
+		return nil
 	}
-	if repo.batchCancel != nil {
-		repo.batchCancel()
-		repo.batchReader = nil
-		repo.batchWriter = nil
-		repo.batchCancel = nil
-	}
-	if repo.checkCancel != nil {
-		repo.checkCancel()
-		repo.checkCancel = nil
-		repo.checkReader = nil
-		repo.checkWriter = nil
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if repo.catFileBatchCloser != nil {
+		repo.catFileBatchCloser.Close()
+		repo.catFileBatchCloser = nil
+		repo.catFileBatchInUse = false
 	}
 	repo.LastCommitCache = nil
 	repo.tagCache = nil
-	return err
+	return nil
 }

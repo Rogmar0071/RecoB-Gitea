@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_8 //nolint
+package v1_8
 
 import "xorm.io/xorm"
 
@@ -12,5 +12,5 @@ func AddIsLockedToIssues(x *xorm.Engine) error {
 		IsLocked bool  `xorm:"NOT NULL DEFAULT false"`
 	}
 
-	return x.Sync2(new(Issue))
+	return x.Sync(new(Issue))
 }

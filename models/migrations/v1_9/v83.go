@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_9 //nolint
+package v1_9
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -23,5 +23,5 @@ func AddUploaderIDForAttachment(x *xorm.Engine) error {
 		CreatedUnix   timeutil.TimeStamp `xorm:"created"`
 	}
 
-	return x.Sync2(new(Attachment))
+	return x.Sync(new(Attachment))
 }

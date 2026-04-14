@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_13 //nolint
+package v1_13
 
 import (
 	"fmt"
@@ -21,20 +21,15 @@ func FixLanguageStatsToSaveSize(x *xorm.Engine) error {
 	// RepoIndexerType specifies the repository indexer type
 	type RepoIndexerType int
 
-	const (
-		// RepoIndexerTypeCode code indexer
-		RepoIndexerTypeCode RepoIndexerType = iota // 0
-		// RepoIndexerTypeStats repository stats indexer
-		RepoIndexerTypeStats // 1
-	)
+	const RepoIndexerTypeStats RepoIndexerType = 1
 
 	// RepoIndexerStatus see models/repo_indexer.go
 	type RepoIndexerStatus struct {
 		IndexerType RepoIndexerType `xorm:"INDEX(s) NOT NULL DEFAULT 0"`
 	}
 
-	if err := x.Sync2(new(LanguageStat)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(LanguageStat)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 
 	x.Delete(&RepoIndexerStatus{IndexerType: RepoIndexerTypeStats})
@@ -46,7 +41,7 @@ func FixLanguageStatsToSaveSize(x *xorm.Engine) error {
 	}
 
 	// Delete language stats
-	if _, err := x.Exec(fmt.Sprintf("%s language_stat", truncExpr)); err != nil {
+	if _, err := x.Exec(truncExpr + " language_stat"); err != nil {
 		return err
 	}
 

@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_11 //nolint
+package v1_11
 
 import (
 	"code.gitea.io/gitea/models/migrations/base"
@@ -15,7 +15,7 @@ func RemoveLabelUneededCols(x *xorm.Engine) error {
 		QueryString string
 		IsSelected  bool
 	}
-	if err := x.Sync2(new(Label)); err != nil {
+	if err := x.Sync(new(Label)); err != nil {
 		return err
 	}
 
