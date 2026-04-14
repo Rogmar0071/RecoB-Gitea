@@ -263,3 +263,35 @@ func ReserveLineBreakForTextarea(input string) string {
 	// Other than this, we should respect the original content, even leading or trailing spaces.
 	return strings.ReplaceAll(input, "\r\n", "\n")
 }
+
+func DiffSlice[T comparable](oldSlice, newSlice []T) (added, removed []T) {
+	oldSet := make(map[T]struct{}, len(oldSlice))
+	newSet := make(map[T]struct{}, len(newSlice))
+
+	for _, v := range oldSlice {
+		oldSet[v] = struct{}{}
+	}
+	for _, v := range newSlice {
+		newSet[v] = struct{}{}
+	}
+
+	addedSet := make(map[T]struct{})
+	for _, v := range newSlice {
+		if _, found := oldSet[v]; !found {
+			if _, alreadyAdded := addedSet[v]; !alreadyAdded {
+				added = append(added, v)
+				addedSet[v] = struct{}{}
+			}
+		}
+	}
+	removedSet := make(map[T]struct{})
+	for _, v := range oldSlice {
+		if _, found := newSet[v]; !found {
+			if _, alreadyRemoved := removedSet[v]; !alreadyRemoved {
+				removed = append(removed, v)
+				removedSet[v] = struct{}{}
+			}
+		}
+	}
+	return added, removed
+}

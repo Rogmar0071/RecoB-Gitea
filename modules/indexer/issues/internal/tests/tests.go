@@ -301,38 +301,20 @@ var cases = []*testIndexerCase{
 		},
 	},
 	{
-		Name: "ProjectID",
+		Name: "ProjectIDs",
 		SearchOptions: &internal.SearchOptions{
 			Paginator: &db.ListOptions{
 				PageSize: 5,
 			},
-			ProjectID: optional.Some(int64(1)),
+			ProjectIDs: []int64{1},
 		},
 		Expected: func(t *testing.T, data map[int64]*internal.IndexerData, result *internal.SearchResult) {
 			assert.Len(t, result.Hits, 5)
 			for _, v := range result.Hits {
-				assert.Equal(t, int64(1), data[v.ID].ProjectID)
+				assert.Contains(t, data[v.ID].ProjectIDs, int64(1))
 			}
 			assert.Equal(t, countIndexerData(data, func(v *internal.IndexerData) bool {
-				return v.ProjectID == 1
-			}), result.Total)
-		},
-	},
-	{
-		Name: "no ProjectID",
-		SearchOptions: &internal.SearchOptions{
-			Paginator: &db.ListOptions{
-				PageSize: 5,
-			},
-			ProjectID: optional.Some(int64(0)),
-		},
-		Expected: func(t *testing.T, data map[int64]*internal.IndexerData, result *internal.SearchResult) {
-			assert.Len(t, result.Hits, 5)
-			for _, v := range result.Hits {
-				assert.Equal(t, int64(0), data[v.ID].ProjectID)
-			}
-			assert.Equal(t, countIndexerData(data, func(v *internal.IndexerData) bool {
-				return v.ProjectID == 0
+				return slices.Contains(v.ProjectIDs, int64(1))
 			}), result.Total)
 		},
 	},
@@ -370,6 +352,53 @@ var cases = []*testIndexerCase{
 			assert.Equal(t, countIndexerData(data, func(v *internal.IndexerData) bool {
 				return v.ProjectColumnID == 0
 			}), result.Total)
+		},
+	},
+	{
+		Name: "no ProjectIDs (empty array)",
+		SearchOptions: &internal.SearchOptions{
+			Paginator: &db.ListOptions{
+				PageSize: 50,
+			},
+			NoProjectOnly: true,
+		},
+		Expected: func(t *testing.T, data map[int64]*internal.IndexerData, result *internal.SearchResult) {
+			// Verify only issues with no projects are returned
+			for _, v := range result.Hits {
+				assert.Empty(t, data[v.ID].ProjectIDs, "Issue %d should have no projects", v.ID)
+			}
+			// Verify we got ALL issues with no projects
+			expectedCount := countIndexerData(data, func(v *internal.IndexerData) bool {
+				return len(v.ProjectIDs) == 0
+			})
+			assert.Equal(t, expectedCount, result.Total, "Should return all %d issues with no project", expectedCount)
+		},
+	},
+	{
+		Name: "ProjectColumnMap consistency",
+		SearchOptions: &internal.SearchOptions{
+			Paginator: &db.ListOptions{
+				PageSize: 50,
+			},
+			ProjectIDs: []int64{1, 2},
+		},
+		Expected: func(t *testing.T, data map[int64]*internal.IndexerData, result *internal.SearchResult) {
+			// Verify ProjectColumnMap is populated and consistent with ProjectIDs
+			for _, v := range result.Hits {
+				issue := data[v.ID]
+				if len(issue.ProjectIDs) > 0 {
+					// If issue has projects, it should have a ProjectColumnMap
+					assert.NotNil(t, issue.ProjectColumnMap, "Issue %d should have ProjectColumnMap", v.ID)
+					// Every project in ProjectIDs should have an entry in ProjectColumnMap
+					for _, projectID := range issue.ProjectIDs {
+						_, exists := issue.ProjectColumnMap[projectID]
+						assert.True(t, exists, "Issue %d should have column mapping for project %d", v.ID, projectID)
+					}
+					// ProjectColumnMap should only contain projects from ProjectIDs
+					assert.Len(t, issue.ProjectColumnMap, len(issue.ProjectIDs),
+						"Issue %d: ProjectColumnMap size should match ProjectIDs size", v.ID)
+				}
+			}
 		},
 	},
 	{
@@ -706,6 +735,16 @@ func generateDefaultIndexerData() []*internal.IndexerData {
 			for i := range subscriberIDs {
 				subscriberIDs[i] = int64(i) + 1 // SubscriberID should not be 0
 			}
+			projectIDs := make([]int64, id%5)
+			for i := range projectIDs {
+				projectIDs[i] = int64(i) + 1 // projectID should not be 0
+			}
+
+			// Build ProjectColumnMap: map each project to a column
+			projectColumnMap := make(map[int64]int64, len(projectIDs))
+			for _, projectID := range projectIDs {
+				projectColumnMap[projectID] = issueIndex % 6
+			}
 
 			data = append(data, &internal.IndexerData{
 				ID:                 id,
@@ -719,8 +758,10 @@ func generateDefaultIndexerData() []*internal.IndexerData {
 				LabelIDs:           labelIDs,
 				NoLabel:            len(labelIDs) == 0,
 				MilestoneID:        issueIndex % 4,
-				ProjectID:          issueIndex % 5,
+				ProjectIDs:         projectIDs,
+				NoProject:          len(projectIDs) == 0,
 				ProjectColumnID:    issueIndex % 6,
+				ProjectColumnMap:   projectColumnMap,
 				PosterID:           id%10 + 1, // PosterID should not be 0
 				AssigneeID:         issueIndex % 10,
 				MentionIDs:         mentionIDs,
