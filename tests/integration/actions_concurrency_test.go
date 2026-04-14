@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"testing"
 	"time"
 
@@ -96,7 +97,7 @@ jobs:
 		// fetch and exec workflow1
 		task := runner.fetchTask(t)
 		_, _, run := getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-1.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -109,7 +110,7 @@ jobs:
 		// fetch workflow2
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-2.yml", run.WorkflowID)
 
 		// push workflow3
@@ -125,7 +126,7 @@ jobs:
 		// fetch and exec workflow3
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-3.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -201,7 +202,7 @@ jobs:
 		// fetch and exec workflow1
 		task := runner.fetchTask(t)
 		_, _, run := getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-1.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -214,7 +215,7 @@ jobs:
 		// fetch workflow2
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-2.yml", run.WorkflowID)
 
 		// push workflow3
@@ -230,7 +231,7 @@ jobs:
 		// fetch and exec workflow3
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-3.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -318,7 +319,7 @@ jobs:
 		// fetch and exec workflow1
 		task := runner.fetchTask(t)
 		_, _, run := getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-1.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -331,7 +332,7 @@ jobs:
 		// fetch workflow2
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-2.yml", run.WorkflowID)
 
 		// push workflow3
@@ -347,7 +348,7 @@ jobs:
 		// fetch and exec workflow3
 		task = runner.fetchTask(t)
 		_, _, run = getTaskAndJobAndRunByTaskID(t, task.Id)
-		assert.Equal(t, "workflow-main-abc123-user2", run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-main-abc123-user2", getRunConcurrencyGroup(t, run))
 		assert.Equal(t, "concurrent-workflow-3.yml", run.WorkflowID)
 		runner.fetchNoTask(t)
 		runner.execTask(t, task, &mockTaskOutcome{
@@ -412,8 +413,8 @@ jobs:
 		doAPICreatePullRequest(user2APICtx, baseRepo.OwnerName, baseRepo.Name, baseRepo.DefaultBranch, "bugfix/aaa")(t)
 		pr1Task1 := runner.fetchTask(t)
 		_, _, pr1Run1 := getTaskAndJobAndRunByTaskID(t, pr1Task1.Id)
-		assert.Equal(t, "pull-request-test", pr1Run1.ConcurrencyGroup)
-		assert.True(t, pr1Run1.ConcurrencyCancel)
+		assert.Equal(t, "pull-request-test", getRunConcurrencyGroup(t, pr1Run1))
+		assert.True(t, getRunConcurrencyCancel(t, pr1Run1))
 		assert.Equal(t, actions_model.StatusRunning, pr1Run1.Status)
 
 		// user4 forks the repo
@@ -458,8 +459,8 @@ jobs:
 		// fetch the task and the previous task has been cancelled
 		pr2Task1 := runner.fetchTask(t)
 		_, _, pr2Run1 = getTaskAndJobAndRunByTaskID(t, pr2Task1.Id)
-		assert.Equal(t, "pull-request-test", pr2Run1.ConcurrencyGroup)
-		assert.True(t, pr2Run1.ConcurrencyCancel)
+		assert.Equal(t, "pull-request-test", getRunConcurrencyGroup(t, pr2Run1))
+		assert.True(t, getRunConcurrencyCancel(t, pr2Run1))
 		assert.Equal(t, actions_model.StatusRunning, pr2Run1.Status)
 		pr1Run1 = unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: pr1Run1.ID})
 		assert.Equal(t, actions_model.StatusCancelled, pr1Run1.Status)
@@ -495,8 +496,8 @@ jobs:
 		// fetch the task
 		pr3Task1 := runner.fetchTask(t)
 		_, _, pr3Run1 := getTaskAndJobAndRunByTaskID(t, pr3Task1.Id)
-		assert.Equal(t, "pull-request-test", pr3Run1.ConcurrencyGroup)
-		assert.False(t, pr3Run1.ConcurrencyCancel)
+		assert.Equal(t, "pull-request-test", getRunConcurrencyGroup(t, pr3Run1))
+		assert.False(t, getRunConcurrencyCancel(t, pr3Run1))
 		assert.Equal(t, actions_model.StatusRunning, pr3Run1.Status)
 	})
 }
@@ -643,6 +644,7 @@ jobs:
 		assert.Equal(t, "job-main-v1.24.0", wf2Job2Rerun1Job.ConcurrencyGroup)
 
 		// rerun wf2-job2
+		wf2Job2ActionJob = getLatestAttemptJobByTemplateJobID(t, wf2Run.ID, wf2Job2ActionJob.ID)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, repo.Name, wf2Run.ID, wf2Job2ActionJob.ID))
 		_ = session.MakeRequest(t, req, http.StatusOK)
 		// (rerun2) fetch and exec wf2-job2
@@ -803,7 +805,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task1 := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, task1.Id)
-		assert.Equal(t, "workflow-dispatch-v1.21", run1.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.21", getRunConcurrencyGroup(t, run1))
 
 		// run the workflow with appVersion=v1.22 and cancel=false
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
@@ -813,7 +815,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task2 := runner.fetchTask(t)
 		_, _, run2 := getTaskAndJobAndRunByTaskID(t, task2.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run2.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run2))
 
 		// run the workflow with appVersion=v1.22 and cancel=false again
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
@@ -832,7 +834,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task4 := runner.fetchTask(t)
 		_, _, run4 := getTaskAndJobAndRunByTaskID(t, task4.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run4.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run4))
 		_, _, run2 = getTaskAndJobAndRunByTaskID(t, task2.Id)
 		assert.Equal(t, actions_model.StatusCancelled, run2.Status)
 	})
@@ -893,7 +895,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task1 := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, task1.Id)
-		assert.Equal(t, "workflow-dispatch-v1.21", run1.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.21", getRunConcurrencyGroup(t, run1))
 
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
 			"ref":        "refs/heads/main",
@@ -902,7 +904,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task2 := runner.fetchTask(t)
 		_, _, run2 := getTaskAndJobAndRunByTaskID(t, task2.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run2.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run2))
 
 		// run the workflow with appVersion=v1.22 and cancel=false again
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
@@ -927,7 +929,7 @@ jobs:
 		task4 := runner.fetchTask(t)
 		_, _, run4 := getTaskAndJobAndRunByTaskID(t, task4.Id)
 		assert.Equal(t, actions_model.StatusRunning, run4.Status)
-		assert.Equal(t, "workflow-dispatch-v1.22", run4.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run4))
 		_, _, run2 = getTaskAndJobAndRunByTaskID(t, task2.Id)
 		assert.Equal(t, actions_model.StatusCancelled, run2.Status)
 
@@ -945,7 +947,7 @@ jobs:
 
 		task5 := runner.fetchTask(t)
 		_, _, run4_1 := getTaskAndJobAndRunByTaskID(t, task5.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run4_1.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run4_1))
 		assert.Equal(t, run4.ID, run4_1.ID)
 		_, _, run2_1 := getTaskAndJobAndRunByTaskID(t, task2.Id)
 		assert.Equal(t, actions_model.StatusCancelled, run2_1.Status)
@@ -969,7 +971,7 @@ jobs:
 		_, _, run3_2 := getTaskAndJobAndRunByTaskID(t, task6.Id)
 		assert.Equal(t, run3.ID, run3_2.ID)
 		assert.Equal(t, actions_model.StatusRunning, run3_2.Status)
-		assert.Equal(t, "workflow-dispatch-v1.22", run3.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run3))
 
 		run2_2 = unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: run2_2.ID})
 		assert.Equal(t, actions_model.StatusCancelled, run2_2.Status) // cancelled by run3
@@ -1031,7 +1033,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task1 := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, task1.Id)
-		assert.Equal(t, "workflow-dispatch-v1.21", run1.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.21", getRunConcurrencyGroup(t, run1))
 
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
 			"ref":        "refs/heads/main",
@@ -1040,7 +1042,7 @@ jobs:
 		session.MakeRequest(t, req, http.StatusSeeOther)
 		task2 := runner.fetchTask(t)
 		_, job2, run2 := getTaskAndJobAndRunByTaskID(t, task2.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run2.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run2))
 
 		// run the workflow with appVersion=v1.22 and cancel=false again
 		req = NewRequestWithValues(t, "POST", urlStr, map[string]string{
@@ -1065,7 +1067,7 @@ jobs:
 		task4 := runner.fetchTask(t)
 		_, job4, run4 := getTaskAndJobAndRunByTaskID(t, task4.Id)
 		assert.Equal(t, actions_model.StatusRunning, run4.Status)
-		assert.Equal(t, "workflow-dispatch-v1.22", run4.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run4))
 		_, _, run2 = getTaskAndJobAndRunByTaskID(t, task2.Id)
 		assert.Equal(t, actions_model.StatusCancelled, run2.Status)
 
@@ -1074,15 +1076,17 @@ jobs:
 		})
 
 		// rerun cancel true scenario
+		job2 = getLatestAttemptJobByTemplateJobID(t, run2.ID, job2.ID)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, apiRepo.Name, run2.ID, job2.ID))
 		_ = session.MakeRequest(t, req, http.StatusOK)
 
+		job4 = getLatestAttemptJobByTemplateJobID(t, run4.ID, job4.ID)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, apiRepo.Name, run4.ID, job4.ID))
 		_ = session.MakeRequest(t, req, http.StatusOK)
 
 		task5 := runner.fetchTask(t)
 		_, _, run4_1 := getTaskAndJobAndRunByTaskID(t, task5.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run4_1.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run4_1))
 		assert.Equal(t, run4.ID, run4_1.ID)
 		_, _, run2_1 := getTaskAndJobAndRunByTaskID(t, task2.Id)
 		assert.Equal(t, actions_model.StatusCancelled, run2_1.Status)
@@ -1093,18 +1097,20 @@ jobs:
 
 		// rerun cancel false scenario
 
+		job2 = getLatestAttemptJobByTemplateJobID(t, run2.ID, job2.ID)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, apiRepo.Name, run2.ID, job2.ID))
 		_ = session.MakeRequest(t, req, http.StatusOK)
 
 		run2_2 := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: run2.ID})
 		assert.Equal(t, actions_model.StatusWaiting, run2_2.Status)
 
+		job3 = getLatestAttemptJobByTemplateJobID(t, run3.ID, job3.ID)
 		req = NewRequest(t, "POST", fmt.Sprintf("/%s/%s/actions/runs/%d/jobs/%d/rerun", user2.Name, apiRepo.Name, run3.ID, job3.ID))
 		_ = session.MakeRequest(t, req, http.StatusOK)
 
 		task6 := runner.fetchTask(t)
 		_, _, run3 = getTaskAndJobAndRunByTaskID(t, task6.Id)
-		assert.Equal(t, "workflow-dispatch-v1.22", run3.ConcurrencyGroup)
+		assert.Equal(t, "workflow-dispatch-v1.22", getRunConcurrencyGroup(t, run3))
 
 		run2_2 = unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: run2_2.ID})
 		assert.Equal(t, actions_model.StatusCancelled, run2_2.Status) // cancelled by run3
@@ -1147,8 +1153,8 @@ jobs:
 		// fetch the task triggered by push
 		task1 := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, task1.Id)
-		assert.Equal(t, "schedule-concurrency", run1.ConcurrencyGroup)
-		assert.True(t, run1.ConcurrencyCancel)
+		assert.Equal(t, "schedule-concurrency", getRunConcurrencyGroup(t, run1))
+		assert.True(t, getRunConcurrencyCancel(t, run1))
 		assert.Equal(t, string(webhook_module.HookEventPush), run1.TriggerEvent)
 		assert.Equal(t, actions_model.StatusRunning, run1.Status)
 
@@ -1165,8 +1171,8 @@ jobs:
 		assert.Equal(t, actions_model.StatusSuccess, run1.Status)
 		task2 := runner.fetchTask(t)
 		_, _, run2 := getTaskAndJobAndRunByTaskID(t, task2.Id)
-		assert.Equal(t, "schedule-concurrency", run2.ConcurrencyGroup)
-		assert.False(t, run2.ConcurrencyCancel)
+		assert.Equal(t, "schedule-concurrency", getRunConcurrencyGroup(t, run2))
+		assert.False(t, getRunConcurrencyCancel(t, run2))
 		assert.Equal(t, string(webhook_module.HookEventSchedule), run2.TriggerEvent)
 		assert.Equal(t, actions_model.StatusRunning, run2.Status)
 
@@ -1177,8 +1183,8 @@ jobs:
 		assert.NoError(t, actions_service.StartScheduleTasks(t.Context()))
 		runner.fetchNoTask(t) // cannot fetch because task2 is not completed
 		run3 := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{RepoID: repo.ID, Status: actions_model.StatusBlocked})
-		assert.Equal(t, "schedule-concurrency", run3.ConcurrencyGroup)
-		assert.False(t, run3.ConcurrencyCancel)
+		assert.Equal(t, "schedule-concurrency", getRunConcurrencyGroup(t, run3))
+		assert.False(t, getRunConcurrencyCancel(t, run3))
 		assert.Equal(t, string(webhook_module.HookEventSchedule), run3.TriggerEvent)
 
 		// trigger the task by push
@@ -1204,8 +1210,8 @@ jobs:
 
 		task4 := runner.fetchTask(t)
 		_, _, run4 := getTaskAndJobAndRunByTaskID(t, task4.Id)
-		assert.Equal(t, "schedule-concurrency", run4.ConcurrencyGroup)
-		assert.True(t, run4.ConcurrencyCancel)
+		assert.Equal(t, "schedule-concurrency", getRunConcurrencyGroup(t, run4))
+		assert.True(t, getRunConcurrencyCancel(t, run4))
 		assert.Equal(t, string(webhook_module.HookEventPush), run4.TriggerEvent)
 		run3 = unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: run3.ID})
 		assert.Equal(t, actions_model.StatusCancelled, run3.Status)
@@ -1317,7 +1323,7 @@ jobs:
 		w1j2Task := runner2.fetchTask(t)
 		_, w1j1Job, w1Run := getTaskAndJobAndRunByTaskID(t, w1j1Task.Id)
 		assert.Equal(t, "job-group-1", w1j1Job.ConcurrencyGroup)
-		assert.Equal(t, "workflow-group-1", w1Run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-group-1", getRunConcurrencyGroup(t, w1Run))
 		assert.Equal(t, "concurrent-workflow-1.yml", w1Run.WorkflowID)
 		assert.Equal(t, actions_model.StatusRunning, w1j1Job.Status)
 		_, w1j2Job, _ := getTaskAndJobAndRunByTaskID(t, w1j2Task.Id)
@@ -1358,7 +1364,7 @@ jobs:
 		w3j1Task := runner1.fetchTask(t)
 		_, w3j1Job, w3Run = getTaskAndJobAndRunByTaskID(t, w3j1Task.Id)
 		assert.Equal(t, "job-group-1", w3j1Job.ConcurrencyGroup)
-		assert.Equal(t, "workflow-group-2", w3Run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-group-2", getRunConcurrencyGroup(t, w3Run))
 		assert.Equal(t, "concurrent-workflow-3.yml", w3Run.WorkflowID)
 
 		// exec wf1-job2
@@ -1370,7 +1376,7 @@ jobs:
 		w2j2Task := runner2.fetchTask(t)
 		_, w2j2Job, w2Run := getTaskAndJobAndRunByTaskID(t, w2j2Task.Id)
 		assert.Equal(t, "job-group-2", w2j2Job.ConcurrencyGroup)
-		assert.Equal(t, "workflow-group-1", w2Run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-group-1", getRunConcurrencyGroup(t, w2Run))
 		assert.Equal(t, "concurrent-workflow-2.yml", w2Run.WorkflowID)
 		assert.Equal(t, actions_model.StatusRunning, w2j2Job.Status)
 
@@ -1397,7 +1403,7 @@ jobs:
 		assert.Equal(t, actions_model.StatusCancelled, w2Run.Status)
 		_, w4j1Job, w4Run := getTaskAndJobAndRunByTaskID(t, w4j1Task.Id)
 		assert.Equal(t, "job-group-2", w4j1Job.ConcurrencyGroup)
-		assert.Equal(t, "workflow-group-2", w4Run.ConcurrencyGroup)
+		assert.Equal(t, "workflow-group-2", getRunConcurrencyGroup(t, w4Run))
 		assert.Equal(t, "concurrent-workflow-4.yml", w4Run.WorkflowID)
 	})
 }
@@ -1435,8 +1441,8 @@ jobs:
 		// fetch and check the first task
 		task1 := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, task1.Id)
-		assert.Equal(t, "cancel-run-group", run1.ConcurrencyGroup)
-		assert.False(t, run1.ConcurrencyCancel)
+		assert.Equal(t, "cancel-run-group", getRunConcurrencyGroup(t, run1))
+		assert.False(t, getRunConcurrencyCancel(t, run1))
 		assert.Equal(t, actions_model.StatusRunning, run1.Status)
 
 		// push another file to trigger the workflow again
@@ -1473,8 +1479,8 @@ jobs:
 		// fetch and check the second task
 		task2 := runner.fetchTask(t)
 		_, _, run2 := getTaskAndJobAndRunByTaskID(t, task2.Id)
-		assert.Equal(t, "cancel-run-group", run2.ConcurrencyGroup)
-		assert.False(t, run2.ConcurrencyCancel)
+		assert.Equal(t, "cancel-run-group", getRunConcurrencyGroup(t, run2))
+		assert.False(t, getRunConcurrencyCancel(t, run2))
 		assert.Equal(t, actions_model.StatusRunning, run2.Status)
 	})
 }
@@ -1533,7 +1539,7 @@ jobs:
 		// fetch wf1-job1
 		w1j1Task := runner.fetchTask(t)
 		_, _, run1 := getTaskAndJobAndRunByTaskID(t, w1j1Task.Id)
-		assert.Equal(t, "test-group", run1.ConcurrencyGroup)
+		assert.Equal(t, "test-group", getRunConcurrencyGroup(t, run1))
 		assert.Equal(t, actions_model.StatusRunning, run1.Status)
 		// query wf1-job2 from db and check its status
 		w1j2Job := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRunJob{RunID: run1.ID, JobID: "wf1-job2"})
@@ -1571,7 +1577,7 @@ jobs:
 		// fetch wf2-job1 and check
 		w2j1Task := runner.fetchTask(t)
 		_, w2j1Job, run2 := getTaskAndJobAndRunByTaskID(t, w2j1Task.Id)
-		assert.Equal(t, "test-group", run2.ConcurrencyGroup)
+		assert.Equal(t, "test-group", getRunConcurrencyGroup(t, run2))
 		assert.Equal(t, "wf2-job1", w2j1Job.JobID)
 		assert.Equal(t, actions_model.StatusRunning, run2.Status)
 		assert.Equal(t, actions_model.StatusRunning, w2j1Job.Status)
@@ -1650,7 +1656,7 @@ jobs:
 		// cannot fetch run2 because run1 is still running
 		runner.fetchNoTask(t)
 		run2 := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{RepoID: repo.ID, WorkflowID: "concurrent-workflow-2.yml"})
-		assert.Equal(t, "test-group", run2.ConcurrencyGroup)
+		assert.Equal(t, "test-group", getRunConcurrencyGroup(t, run2))
 		assert.Equal(t, actions_model.StatusBlocked, run2.Status)
 
 		// exec run1
@@ -1676,4 +1682,41 @@ jobs:
 		run2 = unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: run2.ID})
 		assert.Equal(t, actions_model.StatusCancelled, run2.Status)
 	})
+}
+
+func getRunConcurrencyGroup(t *testing.T, run *actions_model.ActionRun) string {
+	cg, _, err := run.GetEffectiveConcurrency(t.Context())
+	assert.NoError(t, err)
+	return cg
+}
+
+func getRunConcurrencyCancel(t *testing.T, run *actions_model.ActionRun) bool {
+	_, cc, err := run.GetEffectiveConcurrency(t.Context())
+	assert.NoError(t, err)
+	return cc
+}
+
+func getLatestAttemptJobByTemplateJobID(t *testing.T, runID, templateJobID int64) *actions_model.ActionRunJob {
+	t.Helper()
+
+	templateJob := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRunJob{ID: templateJobID, RunID: runID})
+	run := unittest.AssertExistsAndLoadBean(t, &actions_model.ActionRun{ID: runID})
+
+	if templateJob.AttemptJobID > 0 {
+		job, err := actions_model.GetRunJobByAttemptJobID(t.Context(), run.ID, run.LatestAttemptID, templateJob.AttemptJobID)
+		assert.NoError(t, err)
+		return job
+	}
+
+	legacyJobs, err := actions_model.GetRunJobsByRunAndAttemptID(t.Context(), run.ID, 0)
+	assert.NoError(t, err)
+	jobIdx := slices.IndexFunc(legacyJobs, func(job *actions_model.ActionRunJob) bool { return job.ID == templateJobID })
+	newAttemptJobs, err := actions_model.GetRunJobsByRunAndAttemptID(t.Context(), run.ID, run.LatestAttemptID)
+	assert.NoError(t, err)
+	if jobIdx < len(newAttemptJobs) {
+		return newAttemptJobs[jobIdx]
+	}
+
+	assert.Failf(t, "latest attempt job not found", "run %d latest attempt %d does not contain job %q", run.ID, run.LatestAttemptID, templateJob.JobID)
+	return nil
 }

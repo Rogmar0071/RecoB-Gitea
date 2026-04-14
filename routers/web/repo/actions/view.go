@@ -34,7 +34,6 @@ import (
 	"code.gitea.io/gitea/routers/common"
 	actions_service "code.gitea.io/gitea/services/actions"
 	context_module "code.gitea.io/gitea/services/context"
-	notify_service "code.gitea.io/gitea/services/notify"
 
 	"github.com/nektos/act/pkg/model"
 )
@@ -166,7 +165,7 @@ func resolveCurrentRunForView(ctx *context_module.Context) *actions_model.Action
 			return nil
 		}
 		if run != nil {
-			jobs, err := actions_model.GetRunJobsByRunID(ctx, run.ID)
+			jobs, err := actions_model.GetLatestAttemptJobsByRepoAndRunID(ctx, run.RepoID, run.ID)
 			if err != nil {
 				ctx.ServerError("GetRunJobsByRunID", err)
 				return nil
@@ -203,9 +202,28 @@ func View(ctx *context_module.Context) {
 	if ctx.Written() {
 		return
 	}
-	ctx.Data["RunID"] = run.ID
-	ctx.Data["JobID"] = ctx.PathParamInt64("job") // it can be 0 when no job (e.g.: run summary view)
-	ctx.Data["ActionsURL"] = ctx.Repo.RepoLink + "/actions"
+	run.Repo = ctx.Repo.Repository
+
+	jobID := ctx.PathParamInt64("job")
+	ctx.Data["JobID"] = jobID // it can be 0 when no job (e.g.: run summary view)
+
+	attemptNum := ctx.PathParamInt64("attempt")
+
+	switch {
+	case attemptNum > 0:
+		attempt, err := actions_model.GetRunAttemptByRunIDAndAttemptNum(ctx, run.ID, attemptNum)
+		if err != nil {
+			ctx.NotFoundOrServerError("GetRunAttemptByRunIDAndAttempt", func(err error) bool {
+				return errors.Is(err, util.ErrNotExist)
+			}, err)
+			return
+		}
+		ctx.Data["ViewURL"] = getRunViewLink(run, attempt)
+	case jobID > 0:
+		ctx.Data["ViewURL"] = fmt.Sprintf("%s/jobs/%d", run.Link(), jobID)
+	default:
+		ctx.Data["ViewURL"] = run.Link()
+	}
 
 	ctx.HTML(http.StatusOK, tplViewActions)
 }
@@ -258,22 +276,25 @@ type ViewResponse struct {
 
 	State struct {
 		Run struct {
-			RepoID            int64         `json:"repoId"`
-			Link              string        `json:"link"`
-			Title             string        `json:"title"`
-			TitleHTML         template.HTML `json:"titleHTML"`
-			Status            string        `json:"status"`
-			CanCancel         bool          `json:"canCancel"`
-			CanApprove        bool          `json:"canApprove"` // the run needs an approval and the doer has permission to approve
-			CanRerun          bool          `json:"canRerun"`
-			CanRerunFailed    bool          `json:"canRerunFailed"`
-			CanDeleteArtifact bool          `json:"canDeleteArtifact"`
-			Done              bool          `json:"done"`
-			WorkflowID        string        `json:"workflowID"`
-			WorkflowLink      string        `json:"workflowLink"`
-			IsSchedule        bool          `json:"isSchedule"`
-			Jobs              []*ViewJob    `json:"jobs"`
-			Commit            ViewCommit    `json:"commit"`
+			RepoID            int64             `json:"repoId"`
+			Link              string            `json:"link"`
+			ViewLink          string            `json:"viewLink"`
+			Title             string            `json:"title"`
+			TitleHTML         template.HTML     `json:"titleHTML"`
+			Status            string            `json:"status"`
+			CanCancel         bool              `json:"canCancel"`
+			CanApprove        bool              `json:"canApprove"` // the run needs an approval and the doer has permission to approve
+			CanRerun          bool              `json:"canRerun"`
+			CanRerunFailed    bool              `json:"canRerunFailed"`
+			CanDeleteArtifact bool              `json:"canDeleteArtifact"`
+			Done              bool              `json:"done"`
+			WorkflowID        string            `json:"workflowID"`
+			WorkflowLink      string            `json:"workflowLink"`
+			IsSchedule        bool              `json:"isSchedule"`
+			RunAttempt        int64             `json:"runAttempt"`
+			Attempts          []*ViewRunAttempt `json:"attempts"`
+			Jobs              []*ViewJob        `json:"jobs"`
+			Commit            ViewCommit        `json:"commit"`
 			// Summary view: run duration and trigger time/event
 			Duration     string `json:"duration"`
 			TriggeredAt  int64  `json:"triggeredAt"`  // unix seconds for relative time
@@ -292,12 +313,25 @@ type ViewResponse struct {
 
 type ViewJob struct {
 	ID       int64    `json:"id"`
+	Link     string   `json:"link"`
 	JobID    string   `json:"jobId,omitempty"`
 	Name     string   `json:"name"`
 	Status   string   `json:"status"`
 	CanRerun bool     `json:"canRerun"`
 	Duration string   `json:"duration"`
 	Needs    []string `json:"needs,omitempty"`
+}
+
+type ViewRunAttempt struct {
+	Attempt         int64  `json:"attempt"`
+	Status          string `json:"status"`
+	Done            bool   `json:"done"`
+	Link            string `json:"link"`
+	Current         bool   `json:"current"`
+	Latest          bool   `json:"latest"`
+	TriggeredAt     int64  `json:"triggeredAt"`
+	TriggerUserName string `json:"triggerUserName"`
+	TriggerUserLink string `json:"triggerUserLink"`
 }
 
 type ViewCommit struct {
@@ -352,8 +386,23 @@ func getActionsViewArtifacts(ctx context.Context, repoID, runID int64) (artifact
 	return artifactsViewItems, nil
 }
 
+func getActionsViewArtifactsByAttempt(ctx context.Context, repoID, runAttemptID int64) (artifactsViewItems []*ArtifactsViewItem, err error) {
+	artifacts, err := actions_model.ListUploadedArtifactsMetaByRunAttempt(ctx, repoID, runAttemptID)
+	if err != nil {
+		return nil, err
+	}
+	for _, art := range artifacts {
+		artifactsViewItems = append(artifactsViewItems, &ArtifactsViewItem{
+			Name:   art.ArtifactName,
+			Size:   art.FileSize,
+			Status: util.Iif(art.Status == actions_model.ArtifactStatusExpired, "expired", "completed"),
+		})
+	}
+	return artifactsViewItems, nil
+}
+
 func ViewPost(ctx *context_module.Context) {
-	run, jobs := getCurrentRunJobsByPathParam(ctx)
+	run, attempt, isLatestAttempt, jobs := getCurrentRunJobsByPathParam(ctx)
 	if ctx.Written() {
 		return
 	}
@@ -363,7 +412,7 @@ func ViewPost(ctx *context_module.Context) {
 	}
 
 	resp := &ViewResponse{}
-	fillViewRunResponseSummary(ctx, resp, run, jobs)
+	fillViewRunResponseSummary(ctx, resp, run, attempt, isLatestAttempt, jobs)
 	if ctx.Written() {
 		return
 	}
@@ -374,23 +423,32 @@ func ViewPost(ctx *context_module.Context) {
 	ctx.JSON(http.StatusOK, resp)
 }
 
-func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) {
-	var err error
-	resp.Artifacts, err = getActionsViewArtifacts(ctx, ctx.Repo.Repository.ID, run.ID)
-	if err != nil {
-		ctx.ServerError("getActionsViewArtifacts", err)
-		return
-	}
-
+func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse, run *actions_model.ActionRun, attempt *actions_model.ActionRunAttempt, isLatestAttempt bool, jobs []*actions_model.ActionRunJob) {
 	resp.State.Run.RepoID = ctx.Repo.Repository.ID
 	// the title for the "run" is from the commit message
 	resp.State.Run.Title = run.Title
 	resp.State.Run.TitleHTML = templates.NewRenderUtils(ctx).RenderCommitMessage(run.Title, ctx.Repo.Repository)
 	resp.State.Run.Link = run.Link()
-	resp.State.Run.CanCancel = !run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
-	resp.State.Run.CanApprove = run.NeedApproval && ctx.Repo.CanWrite(unit.TypeActions)
-	resp.State.Run.CanRerun = run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
-	resp.State.Run.CanDeleteArtifact = run.Status.IsDone() && ctx.Repo.CanWrite(unit.TypeActions)
+	resp.State.Run.ViewLink = getRunViewLink(run, attempt)
+	if attempt != nil {
+		resp.State.Run.RunAttempt = attempt.Attempt
+	}
+	resp.State.Run.Attempts = make([]*ViewRunAttempt, 0)
+	if attempt != nil {
+		resp.State.Run.Status = attempt.Status.String()
+		resp.State.Run.Done = attempt.Status.IsDone()
+		resp.State.Run.Duration = attempt.Duration().String()
+		resp.State.Run.TriggeredAt = attempt.Created.AsTime().Unix()
+	} else {
+		resp.State.Run.Status = run.Status.String()
+		resp.State.Run.Done = run.Status.IsDone()
+		resp.State.Run.Duration = run.Duration().String()
+		resp.State.Run.TriggeredAt = run.Created.AsTime().Unix()
+	}
+	resp.State.Run.CanCancel = isLatestAttempt && !resp.State.Run.Done && ctx.Repo.CanWrite(unit.TypeActions)
+	resp.State.Run.CanApprove = isLatestAttempt && run.NeedApproval && ctx.Repo.CanWrite(unit.TypeActions)
+	resp.State.Run.CanRerun = isLatestAttempt && resp.State.Run.Done && ctx.Repo.CanWrite(unit.TypeActions)
+	resp.State.Run.CanDeleteArtifact = resp.State.Run.Done && ctx.Repo.CanWrite(unit.TypeActions)
 	if resp.State.Run.CanRerun {
 		for _, job := range jobs {
 			if job.Status == actions_model.StatusFailure || job.Status == actions_model.StatusCancelled {
@@ -399,21 +457,45 @@ func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse,
 			}
 		}
 	}
-	resp.State.Run.Done = run.Status.IsDone()
 	resp.State.Run.WorkflowID = run.WorkflowID
-	resp.State.Run.WorkflowLink = run.WorkflowLink()
+	if isLatestAttempt {
+		resp.State.Run.WorkflowLink = run.WorkflowLink()
+	}
 	resp.State.Run.IsSchedule = run.IsSchedule()
 	resp.State.Run.Jobs = make([]*ViewJob, 0, len(jobs)) // marshal to '[]' instead fo 'null' in json
-	resp.State.Run.Status = run.Status.String()
 	for _, v := range jobs {
 		resp.State.Run.Jobs = append(resp.State.Run.Jobs, &ViewJob{
 			ID:       v.ID,
+			Link:     fmt.Sprintf("%s/jobs/%d", run.Link(), v.ID),
 			JobID:    v.JobID,
 			Name:     v.Name,
 			Status:   v.Status.String(),
 			CanRerun: resp.State.Run.CanRerun,
 			Duration: v.Duration().String(),
 			Needs:    v.Needs,
+		})
+	}
+
+	attempts, err := actions_model.ListRunAttemptsByRunID(ctx, run.ID)
+	if err != nil {
+		ctx.ServerError("ListRunAttemptsByRunID", err)
+		return
+	}
+	if err := actions_model.ActionRunAttemptList(attempts).LoadTriggerUser(ctx); err != nil {
+		ctx.ServerError("LoadTriggerUser", err)
+		return
+	}
+	for _, runAttempt := range attempts {
+		resp.State.Run.Attempts = append(resp.State.Run.Attempts, &ViewRunAttempt{
+			Attempt:         runAttempt.Attempt,
+			Status:          runAttempt.Status.String(),
+			Done:            runAttempt.Status.IsDone(),
+			Link:            getRunViewLink(run, runAttempt),
+			Current:         attempt != nil && runAttempt.ID == attempt.ID,
+			Latest:          run.LatestAttemptID > 0 && runAttempt.ID == run.LatestAttemptID,
+			TriggeredAt:     runAttempt.Created.AsTime().Unix(),
+			TriggerUserName: runAttempt.TriggerUser.GetDisplayName(),
+			TriggerUserLink: runAttempt.TriggerUser.HomeLink(),
 		})
 	}
 
@@ -441,9 +523,18 @@ func fillViewRunResponseSummary(ctx *context_module.Context, resp *ViewResponse,
 		Pusher:   pusher,
 		Branch:   branch,
 	}
-	resp.State.Run.Duration = run.Duration().String()
-	resp.State.Run.TriggeredAt = run.Created.AsTime().Unix()
 	resp.State.Run.TriggerEvent = run.TriggerEvent
+
+	switch {
+	case attempt != nil:
+		resp.Artifacts, err = getActionsViewArtifactsByAttempt(ctx, ctx.Repo.Repository.ID, attempt.ID)
+	case run.LatestAttemptID == 0:
+		resp.Artifacts, err = getActionsViewArtifacts(ctx, ctx.Repo.Repository.ID, run.ID)
+	}
+	if err != nil {
+		ctx.ServerError("get view artifacts", err)
+		return
+	}
 }
 
 func fillViewRunResponseCurrentJob(ctx *context_module.Context, resp *ViewResponse, run *actions_model.ActionRun, jobs []*actions_model.ActionRunJob) {
@@ -457,9 +548,9 @@ func fillViewRunResponseCurrentJob(ctx *context_module.Context, resp *ViewRespon
 	}
 
 	var task *actions_model.ActionTask
-	if current.TaskID > 0 {
+	if effectiveTaskID := current.EffectiveTaskID(); effectiveTaskID > 0 {
 		var err error
-		task, err = actions_model.GetTaskByID(ctx, current.TaskID)
+		task, err = actions_model.GetTaskByID(ctx, effectiveTaskID)
 		if err != nil {
 			ctx.ServerError("actions_model.GetTaskByID", err)
 			return
@@ -587,11 +678,22 @@ func checkRunRerunAllowed(ctx *context_module.Context, run *actions_model.Action
 	return true
 }
 
+func checkLatestAttempt(ctx *context_module.Context, attempt *actions_model.ActionRunAttempt, isLatestAttempt bool) bool {
+	if attempt != nil && !isLatestAttempt {
+		ctx.NotFound(nil)
+		return false
+	}
+	return true
+}
+
 // Rerun will rerun jobs in the given run
 // If jobIDStr is a blank string, it means rerun all jobs
 func Rerun(ctx *context_module.Context) {
-	run, jobs := getCurrentRunJobsByPathParam(ctx)
+	run, attempt, isLatestAttempt, jobs := getCurrentRunJobsByPathParam(ctx)
 	if ctx.Written() {
+		return
+	}
+	if !checkLatestAttempt(ctx, attempt, isLatestAttempt) {
 		return
 	}
 	if !checkRunRerunAllowed(ctx, run) {
@@ -606,35 +708,44 @@ func Rerun(ctx *context_module.Context) {
 
 	var jobsToRerun []*actions_model.ActionRunJob
 	if currentJob != nil {
-		jobsToRerun = actions_service.GetAllRerunJobs(currentJob, jobs)
-	} else {
-		jobsToRerun = jobs
+		jobsToRerun = []*actions_model.ActionRunJob{currentJob}
 	}
 
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobsToRerun); err != nil {
-		ctx.ServerError("RerunWorkflowRunJobs", err)
+	if _, err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, ctx.Doer, jobsToRerun); err != nil {
+		handleWorkflowRerunError(ctx, err)
 		return
 	}
 
-	ctx.JSONOK()
+	ctx.JSONRedirect(run.Link())
 }
 
 // RerunFailed reruns all failed jobs in the given run
 func RerunFailed(ctx *context_module.Context) {
-	run, jobs := getCurrentRunJobsByPathParam(ctx)
+	run, attempt, isLatestAttempt, jobs := getCurrentRunJobsByPathParam(ctx)
 	if ctx.Written() {
+		return
+	}
+	if !checkLatestAttempt(ctx, attempt, isLatestAttempt) {
 		return
 	}
 	if !checkRunRerunAllowed(ctx, run) {
 		return
 	}
 
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetFailedRerunJobs(jobs)); err != nil {
-		ctx.ServerError("RerunWorkflowRunJobs", err)
+	if _, err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, ctx.Doer, actions_service.GetFailedJobsForRerun(jobs)); err != nil {
+		handleWorkflowRerunError(ctx, err)
 		return
 	}
 
-	ctx.JSONOK()
+	ctx.JSONRedirect(run.Link())
+}
+
+func handleWorkflowRerunError(ctx *context_module.Context, err error) {
+	if errors.Is(err, util.ErrAlreadyExist) {
+		ctx.JSON(http.StatusConflict, map[string]any{"message": err.Error()})
+		return
+	}
+	ctx.ServerError("RerunWorkflowRunJobs", err)
 }
 
 func Logs(ctx *context_module.Context) {
@@ -652,8 +763,11 @@ func Logs(ctx *context_module.Context) {
 }
 
 func Cancel(ctx *context_module.Context) {
-	run, jobs := getCurrentRunJobsByPathParam(ctx)
+	run, attempt, isLatestAttempt, jobs := getCurrentRunJobsByPathParam(ctx)
 	if ctx.Written() {
+		return
+	}
+	if !checkLatestAttempt(ctx, attempt, isLatestAttempt) {
 		return
 	}
 
@@ -674,13 +788,9 @@ func Cancel(ctx *context_module.Context) {
 	actions_service.CreateCommitStatusForRunJobs(ctx, run, jobs...)
 	actions_service.EmitJobsIfReadyByJobs(updatedJobs)
 
-	for _, job := range updatedJobs {
-		_ = job.LoadAttributes(ctx)
-		notify_service.WorkflowJobStatusUpdate(ctx, job.Run.Repo, job.Run.TriggerUser, job, nil)
-	}
+	actions_service.NotifyWorkflowJobsStatusUpdate(ctx, updatedJobs...)
 	if len(updatedJobs) > 0 {
-		job := updatedJobs[0]
-		actions_service.NotifyWorkflowRunStatusUpdateWithReload(ctx, job)
+		actions_service.NotifyWorkflowRunStatusUpdateWithReload(ctx, run.RepoID, run.ID)
 	}
 	ctx.JSONOK()
 }
@@ -690,78 +800,14 @@ func Approve(ctx *context_module.Context) {
 	if ctx.Written() {
 		return
 	}
-	approveRuns(ctx, []int64{run.ID})
-	if ctx.Written() {
-		return
-	}
-
-	ctx.JSONOK()
-}
-
-func approveRuns(ctx *context_module.Context, runIDs []int64) {
-	doer := ctx.Doer
-	repo := ctx.Repo.Repository
-
-	updatedJobs := make([]*actions_model.ActionRunJob, 0)
-	runMap := make(map[int64]*actions_model.ActionRun, len(runIDs))
-	runJobs := make(map[int64][]*actions_model.ActionRunJob, len(runIDs))
-
-	err := db.WithTx(ctx, func(ctx context.Context) (err error) {
-		for _, runID := range runIDs {
-			run, err := actions_model.GetRunByRepoAndID(ctx, repo.ID, runID)
-			if err != nil {
-				return err
-			}
-			runMap[run.ID] = run
-			run.Repo = repo
-			run.NeedApproval = false
-			run.ApprovedBy = doer.ID
-			if err := actions_model.UpdateRun(ctx, run, "need_approval", "approved_by"); err != nil {
-				return err
-			}
-			jobs, err := actions_model.GetRunJobsByRunID(ctx, run.ID)
-			if err != nil {
-				return err
-			}
-			runJobs[run.ID] = jobs
-			for _, job := range jobs {
-				job.Status, err = actions_service.PrepareToStartJobWithConcurrency(ctx, job)
-				if err != nil {
-					return err
-				}
-				if job.Status == actions_model.StatusWaiting {
-					n, err := actions_model.UpdateRunJob(ctx, job, nil, "status")
-					if err != nil {
-						return err
-					}
-					if n > 0 {
-						updatedJobs = append(updatedJobs, job)
-					}
-				}
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		ctx.NotFoundOrServerError("approveRuns", func(err error) bool {
+	if err := actions_service.ApproveRuns(ctx, ctx.Repo.Repository, ctx.Doer, []int64{run.ID}); err != nil {
+		ctx.NotFoundOrServerError("ApproveRuns", func(err error) bool {
 			return errors.Is(err, util.ErrNotExist)
 		}, err)
 		return
 	}
 
-	for runID, run := range runMap {
-		actions_service.CreateCommitStatusForRunJobs(ctx, run, runJobs[runID]...)
-	}
-
-	if len(updatedJobs) > 0 {
-		job := updatedJobs[0]
-		actions_service.NotifyWorkflowRunStatusUpdateWithReload(ctx, job)
-	}
-
-	for _, job := range updatedJobs {
-		_ = job.LoadAttributes(ctx)
-		notify_service.WorkflowJobStatusUpdate(ctx, job.Run.Repo, job.Run.TriggerUser, job, nil)
-	}
+	ctx.JSONOK()
 }
 
 func Delete(ctx *context_module.Context) {
@@ -783,28 +829,114 @@ func Delete(ctx *context_module.Context) {
 	ctx.JSONOK()
 }
 
-// getRunJobs loads the run and its jobs for runID
+func getRunViewLink(run *actions_model.ActionRun, attempt *actions_model.ActionRunAttempt) string {
+	if attempt == nil || run.LatestAttemptID == attempt.ID {
+		return run.Link()
+	}
+	return fmt.Sprintf("%s/attempts/%d", run.Link(), attempt.Attempt)
+}
+
+// getCurrentRunJobsByPathParam resolves the current run view context from path parameters, including the run, optional attempt, and jobs to render.
 // Any error will be written to the ctx, empty jobs will also result in 404 error, then the return values are all nil.
-func getCurrentRunJobsByPathParam(ctx *context_module.Context) (*actions_model.ActionRun, []*actions_model.ActionRunJob) {
+func getCurrentRunJobsByPathParam(ctx *context_module.Context) (*actions_model.ActionRun, *actions_model.ActionRunAttempt, bool, []*actions_model.ActionRunJob) {
 	run := getCurrentRunByPathParam(ctx)
 	if ctx.Written() {
-		return nil, nil
+		return nil, nil, false, nil
 	}
 	run.Repo = ctx.Repo.Repository
-	jobs, err := actions_model.GetRunJobsByRunID(ctx, run.ID)
+
+	var err error
+	var selectedJob *actions_model.ActionRunJob
+	if ctx.PathParam("job") != "" {
+		jobID := ctx.PathParamInt64("job")
+		selectedJob, err = actions_model.GetRunJobByRunAndID(ctx, run.ID, jobID)
+		if err != nil {
+			ctx.NotFoundOrServerError("GetRunJobByRepoAndID", func(err error) bool {
+				return errors.Is(err, util.ErrNotExist)
+			}, err)
+			return nil, nil, false, nil
+		}
+	}
+
+	// Resolve the attempt to display.
+	// Priority: explicit path param (/attempts/:num) > job's attempt (when navigating to a specific job) > latest attempt.
+	// attempt may be nil for legacy runs that pre-date ActionRunAttempt; callers must handle that case.
+	attemptNum := ctx.PathParamInt64("attempt")
+	var attempt *actions_model.ActionRunAttempt
+	var isLatestAttempt bool
+	switch {
+	case attemptNum > 0:
+		// Explicit attempt number in the URL — user is viewing a historical attempt.
+		attempt, err = actions_model.GetRunAttemptByRunIDAndAttemptNum(ctx, run.ID, attemptNum)
+		if err != nil {
+			ctx.NotFoundOrServerError("GetRunAttemptByRunIDAndAttempt", func(err error) bool {
+				return errors.Is(err, util.ErrNotExist)
+			}, err)
+			return nil, nil, false, nil
+		}
+		isLatestAttempt = run.LatestAttemptID == attempt.ID
+	case selectedJob != nil && selectedJob.RunAttemptID > 0:
+		// No explicit attempt in the URL, but the requested job belongs to a known attempt — resolve via the job.
+		attempt, err = actions_model.GetRunAttemptByRepoAndID(ctx, selectedJob.RepoID, selectedJob.RunAttemptID)
+		if err != nil {
+			ctx.NotFoundOrServerError("GetRunAttemptByRepoAndID", func(err error) bool {
+				return errors.Is(err, util.ErrNotExist)
+			}, err)
+			return nil, nil, false, nil
+		}
+		isLatestAttempt = run.LatestAttemptID == attempt.ID
+	default:
+		// No attempt context at all — show the latest attempt (nil for legacy runs).
+		attempt, _, err = run.GetLatestAttempt(ctx)
+		if err != nil {
+			ctx.NotFoundOrServerError("GetLatestAttempt", func(err error) bool {
+				return errors.Is(err, util.ErrNotExist)
+			}, err)
+			return nil, nil, false, nil
+		}
+		isLatestAttempt = true
+	}
+
+	// Resolve the jobs for the resolved attempt.
+	// When attempt is nil (legacy run or legacy job), jobs are stored with run_attempt_id=0.
+	var resolvedAttemptID int64
+	if attempt != nil {
+		resolvedAttemptID = attempt.ID
+	}
+	jobs, err := actions_model.GetRunJobsByRunAndAttemptID(ctx, run.ID, resolvedAttemptID)
 	if err != nil {
-		ctx.ServerError("GetRunJobsByRunID", err)
-		return nil, nil
+		ctx.ServerError("get current jobs", err)
+		return nil, nil, false, nil
 	}
 	if len(jobs) == 0 {
 		ctx.NotFound(nil)
-		return nil, nil
+		return nil, nil, false, nil
 	}
 
 	for _, job := range jobs {
 		job.Run = run
 	}
-	return run, jobs
+	return run, attempt, isLatestAttempt, jobs
+}
+
+// getArtifactAttemptByQueryWithoutFallback resolves the artifact attempt from the request.
+// It returns the explicitly requested attempt only when the `attempt` query parameter is present.
+// When the query parameter is absent, ok is false and callers should decide their own fallback
+// behavior, such as using legacy run_attempt_id=0 handling.
+func getArtifactAttemptByQueryWithoutFallback(ctx *context_module.Context, run *actions_model.ActionRun) (*actions_model.ActionRunAttempt, bool, error) {
+	if ctx.FormString("attempt") != "" {
+		attemptNum := ctx.FormInt64("attempt")
+		if attemptNum > 0 {
+			attempt, err := actions_model.GetRunAttemptByRunIDAndAttemptNum(ctx, run.ID, attemptNum)
+			if err != nil {
+				return nil, false, err
+			}
+			return attempt, true, nil
+		}
+		return nil, false, util.ErrNotExist
+	}
+
+	return nil, false, nil
 }
 
 func ArtifactsDeleteView(ctx *context_module.Context) {
@@ -812,9 +944,21 @@ func ArtifactsDeleteView(ctx *context_module.Context) {
 	if ctx.Written() {
 		return
 	}
+	attempt, hasAttempt, err := getArtifactAttemptByQueryWithoutFallback(ctx, run)
+	if err != nil {
+		ctx.NotFoundOrServerError("getArtifactAttemptByQueryWithoutFallback", func(err error) bool {
+			return errors.Is(err, util.ErrNotExist)
+		}, err)
+		return
+	}
 	artifactName := ctx.PathParam("artifact_name")
-	if err := actions_model.SetArtifactNeedDelete(ctx, run.ID, artifactName); err != nil {
-		ctx.ServerError("SetArtifactNeedDelete", err)
+	if hasAttempt {
+		err = actions_model.SetArtifactNeedDeleteByRunAttempt(ctx, run.ID, attempt.ID, artifactName)
+	} else {
+		err = actions_model.SetArtifactNeedDeleteByRunAttempt(ctx, run.ID, 0, artifactName)
+	}
+	if err != nil {
+		ctx.ServerError("SetArtifactNeedDeleteByRunAttempt", err)
 		return
 	}
 	ctx.JSON(http.StatusOK, struct{}{})
@@ -825,14 +969,23 @@ func ArtifactsDownloadView(ctx *context_module.Context) {
 	if ctx.Written() {
 		return
 	}
+	attempt, hasAttempt, err := getArtifactAttemptByQueryWithoutFallback(ctx, run)
+	if err != nil {
+		ctx.NotFoundOrServerError("getArtifactAttemptByQueryWithoutFallback", func(err error) bool {
+			return errors.Is(err, util.ErrNotExist)
+		}, err)
+		return
+	}
 
 	artifactName := ctx.PathParam("artifact_name")
-	artifacts, err := db.Find[actions_model.ActionArtifact](ctx, actions_model.FindArtifactsOptions{
-		RunID:        run.ID,
-		ArtifactName: artifactName,
-	})
+
+	runAttemptID := int64(0)
+	if hasAttempt {
+		runAttemptID = attempt.ID
+	}
+	artifacts, err := actions_model.GetArtifactsByRunAttemptAndName(ctx, run.ID, runAttemptID, artifactName)
 	if err != nil {
-		ctx.ServerError("FindArtifacts", err)
+		ctx.ServerError("GetArtifactsByRunAttemptAndName", err)
 		return
 	}
 	if len(artifacts) == 0 {
@@ -929,8 +1082,10 @@ func ApproveAllChecks(ctx *context_module.Context) {
 		return
 	}
 
-	approveRuns(ctx, runIDs)
-	if ctx.Written() {
+	if err := actions_service.ApproveRuns(ctx, repo, ctx.Doer, runIDs); err != nil {
+		ctx.NotFoundOrServerError("ApproveRuns", func(err error) bool {
+			return errors.Is(err, util.ErrNotExist)
+		}, err)
 		return
 	}
 

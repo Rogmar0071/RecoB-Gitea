@@ -717,7 +717,7 @@ func (Action) ListWorkflowJobs(ctx *context.APIContext) {
 
 	repoID := ctx.Repo.Repository.ID
 
-	shared.ListJobs(ctx, 0, repoID, 0)
+	shared.ListJobs(ctx, 0, repoID, 0, 0)
 }
 
 // ListWorkflowRuns Lists all runs for a repository run.
@@ -1163,12 +1163,30 @@ func getCurrentRepoActionRunJobsByID(ctx *context.APIContext) (*actions_model.Ac
 		return nil, nil
 	}
 
-	jobs, err := actions_model.GetRunJobsByRunID(ctx, run.ID)
+	jobs, err := actions_model.GetLatestAttemptJobsByRepoAndRunID(ctx, run.RepoID, run.ID)
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return nil, nil
 	}
 	return run, jobs
+}
+
+func getCurrentRepoActionRunAttemptByNumber(ctx *context.APIContext) (*actions_model.ActionRun, *actions_model.ActionRunAttempt) {
+	run := getCurrentRepoActionRunByID(ctx)
+	if ctx.Written() {
+		return nil, nil
+	}
+
+	attemptNum := ctx.PathParamInt64("attempt")
+	attempt, err := actions_model.GetRunAttemptByRunIDAndAttemptNum(ctx, run.ID, attemptNum)
+	if errors.Is(err, util.ErrNotExist) {
+		ctx.APIErrorNotFound(err)
+		return nil, nil
+	} else if err != nil {
+		ctx.APIErrorInternal(err)
+		return nil, nil
+	}
+	return run, attempt
 }
 
 // GetWorkflowRun Gets a specific workflow run.
@@ -1207,7 +1225,56 @@ func GetWorkflowRun(ctx *context.APIContext) {
 		return
 	}
 
-	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
+	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run, nil)
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	ctx.JSON(http.StatusOK, convertedRun)
+}
+
+// GetWorkflowRunAttempt Gets a specific workflow run attempt.
+func GetWorkflowRunAttempt(ctx *context.APIContext) {
+	// swagger:operation GET /repos/{owner}/{repo}/actions/runs/{run}/attempts/{attempt} repository getWorkflowRunAttempt
+	// ---
+	// summary: Gets a specific workflow run attempt
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: owner
+	//   in: path
+	//   description: owner of the repo
+	//   type: string
+	//   required: true
+	// - name: repo
+	//   in: path
+	//   description: name of the repository
+	//   type: string
+	//   required: true
+	// - name: run
+	//   in: path
+	//   description: id of the run
+	//   type: integer
+	//   required: true
+	// - name: attempt
+	//   in: path
+	//   description: logical attempt number of the run
+	//   type: integer
+	//   required: true
+	// responses:
+	//   "200":
+	//     "$ref": "#/responses/WorkflowRun"
+	//   "400":
+	//     "$ref": "#/responses/error"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+
+	run, attempt := getCurrentRepoActionRunAttemptByNumber(ctx)
+	if ctx.Written() {
+		return
+	}
+
+	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run, attempt)
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return
@@ -1247,6 +1314,8 @@ func RerunWorkflowRun(ctx *context.APIContext) {
 	//     "$ref": "#/responses/forbidden"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
+	//   "409":
+	//     "$ref": "#/responses/error"
 	//   "422":
 	//     "$ref": "#/responses/validationError"
 
@@ -1255,12 +1324,12 @@ func RerunWorkflowRun(ctx *context.APIContext) {
 		return
 	}
 
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, jobs); err != nil {
+	if _, err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, ctx.Doer, jobs); err != nil {
 		handleWorkflowRerunError(ctx, err)
 		return
 	}
 
-	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run)
+	convertedRun, err := convert.ToActionWorkflowRun(ctx, ctx.Repo.Repository, run, nil)
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return
@@ -1298,6 +1367,8 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
 	//     "$ref": "#/responses/forbidden"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
+	//   "409":
+	//     "$ref": "#/responses/error"
 	//   "422":
 	//     "$ref": "#/responses/validationError"
 
@@ -1306,7 +1377,7 @@ func RerunFailedWorkflowRun(ctx *context.APIContext) {
 		return
 	}
 
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetFailedRerunJobs(jobs)); err != nil {
+	if _, err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, ctx.Doer, actions_service.GetFailedJobsForRerun(jobs)); err != nil {
 		handleWorkflowRerunError(ctx, err)
 		return
 	}
@@ -1351,6 +1422,8 @@ func RerunWorkflowJob(ctx *context.APIContext) {
 	//     "$ref": "#/responses/forbidden"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
+	//   "409":
+	//     "$ref": "#/responses/error"
 	//   "422":
 	//     "$ref": "#/responses/validationError"
 
@@ -1367,12 +1440,37 @@ func RerunWorkflowJob(ctx *context.APIContext) {
 	}
 
 	targetJob := jobs[jobIdx]
-	if err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, actions_service.GetAllRerunJobs(targetJob, jobs)); err != nil {
+	newAttempt, err := actions_service.RerunWorkflowRunJobs(ctx, ctx.Repo.Repository, run, ctx.Doer, []*actions_model.ActionRunJob{targetJob})
+	if err != nil {
 		handleWorkflowRerunError(ctx, err)
 		return
 	}
 
-	convertedJob, err := convert.ToActionWorkflowJob(ctx, ctx.Repo.Repository, nil, targetJob)
+	var rerunJob *actions_model.ActionRunJob
+	if targetJob.AttemptJobID > 0 {
+		// Newer jobs carry AttemptJobID, which lets us locate the corresponding job created in the new attempt directly.
+		rerunJob, err = actions_model.GetRunJobByAttemptJobID(ctx, run.ID, newAttempt.ID, targetJob.AttemptJobID)
+		if err != nil {
+			handleWorkflowRerunError(ctx, err)
+			return
+		}
+	} else {
+		// Legacy jobs have AttemptJobID == 0, so fall back to best-effort matching by the same job position within the attempt.
+		newAttemptJobs, err := actions_model.GetRunJobsByRunAndAttemptID(ctx, run.ID, newAttempt.ID)
+		if err != nil {
+			ctx.APIErrorInternal(err)
+			return
+		}
+		if jobIdx < len(newAttemptJobs) {
+			rerunJob = newAttemptJobs[jobIdx]
+		}
+	}
+	if rerunJob == nil {
+		ctx.APIErrorNotFound(util.NewNotExistErrorf("rerun for job %d", jobID))
+		return
+	}
+
+	convertedJob, err := convert.ToActionWorkflowJob(ctx, ctx.Repo.Repository, nil, rerunJob)
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return
@@ -1383,6 +1481,12 @@ func RerunWorkflowJob(ctx *context.APIContext) {
 func handleWorkflowRerunError(ctx *context.APIContext, err error) {
 	if errors.Is(err, util.ErrInvalidArgument) {
 		ctx.APIError(http.StatusBadRequest, err)
+		return
+	} else if errors.Is(err, util.ErrAlreadyExist) {
+		ctx.APIError(http.StatusConflict, err)
+		return
+	} else if errors.Is(err, util.ErrNotExist) {
+		ctx.APIError(http.StatusNotFound, err)
 		return
 	}
 	ctx.APIErrorInternal(err)
@@ -1440,9 +1544,75 @@ func ListWorkflowRunJobs(ctx *context.APIContext) {
 		return
 	}
 
+	run, err := actions_model.GetRunByRepoAndID(ctx, repoID, runID)
+	if err != nil {
+		if errors.Is(err, util.ErrNotExist) {
+			ctx.APIErrorNotFound(err)
+		} else {
+			ctx.APIErrorInternal(err)
+		}
+		return
+	}
 	// runID is used as an additional filter next to repoID to ensure that we only list jobs for the specified repoID and runID.
 	// no additional checks for runID are needed here
-	shared.ListJobs(ctx, 0, repoID, runID)
+	shared.ListJobs(ctx, 0, repoID, runID, run.LatestAttemptID)
+}
+
+// ListWorkflowRunAttemptJobs Lists all jobs for a workflow run attempt.
+func ListWorkflowRunAttemptJobs(ctx *context.APIContext) {
+	// swagger:operation GET /repos/{owner}/{repo}/actions/runs/{run}/attempts/{attempt}/jobs repository listWorkflowRunAttemptJobs
+	// ---
+	// summary: Lists all jobs for a workflow run attempt
+	// produces:
+	// - application/json
+	// parameters:
+	// - name: owner
+	//   in: path
+	//   description: owner of the repo
+	//   type: string
+	//   required: true
+	// - name: repo
+	//   in: path
+	//   description: name of the repository
+	//   type: string
+	//   required: true
+	// - name: run
+	//   in: path
+	//   description: id of the workflow run
+	//   type: integer
+	//   required: true
+	// - name: attempt
+	//   in: path
+	//   description: logical attempt number of the run
+	//   type: integer
+	//   required: true
+	// - name: status
+	//   in: query
+	//   description: workflow status (pending, queued, in_progress, failure, success, skipped)
+	//   type: string
+	//   required: false
+	// - name: page
+	//   in: query
+	//   description: page number of results to return (1-based)
+	//   type: integer
+	// - name: limit
+	//   in: query
+	//   description: page size of results
+	//   type: integer
+	// responses:
+	//   "200":
+	//     "$ref": "#/responses/WorkflowJobsList"
+	//   "400":
+	//     "$ref": "#/responses/error"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
+
+	run, attempt := getCurrentRepoActionRunAttemptByNumber(ctx)
+	if ctx.Written() {
+		return
+	}
+
+	shared.ListJobs(ctx, 0, run.RepoID, run.ID, attempt.ID)
 }
 
 // GetWorkflowJob Gets a specific workflow job for a workflow run.
@@ -1758,7 +1928,7 @@ func DeleteArtifact(ctx *context.APIContext) {
 	}
 
 	if actions.IsArtifactV4(art) {
-		if err := actions_model.SetArtifactNeedDelete(ctx, art.RunID, art.ArtifactName); err != nil {
+		if err := actions_model.SetArtifactNeedDeleteByID(ctx, art.ID); err != nil {
 			ctx.APIErrorInternal(err)
 			return
 		}
