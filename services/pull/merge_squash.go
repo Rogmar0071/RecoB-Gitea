@@ -7,41 +7,77 @@ import (
 	"fmt"
 
 	repo_model "code.gitea.io/gitea/models/repo"
+	user_model "code.gitea.io/gitea/models/user"
+	"code.gitea.io/gitea/modules/container"
 	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/modules/git/gitcmd"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
 )
 
+// doMergeStyleSquash gets a commit author signature for squash commits
+func getAuthorSignatureSquash(ctx *mergeContext) (*git.Signature, error) {
+	if err := ctx.pr.Issue.LoadPoster(ctx); err != nil {
+		log.Error("%-v Issue[%d].LoadPoster: %v", ctx.pr, ctx.pr.Issue.ID, err)
+		return nil, err
+	}
+
+	// Try to get an signature from the same user in one of the commits, as the
+	// poster email might be private or commits might have a different signature
+	// than the primary email address of the poster.
+	gitRepo, err := git.OpenRepository(ctx, ctx.tmpBasePath)
+	if err != nil {
+		log.Error("%-v Unable to open base repository: %v", ctx.pr, err)
+		return nil, err
+	}
+	defer gitRepo.Close()
+
+	commits, err := gitRepo.CommitsBetweenIDs(tmpRepoTrackingBranch, "HEAD")
+	if err != nil {
+		log.Error("%-v Unable to get commits between: %s %s: %v", ctx.pr, "HEAD", tmpRepoTrackingBranch, err)
+		return nil, err
+	}
+
+	uniqueEmails := make(container.Set[string])
+	for _, commit := range commits {
+		if commit.Author != nil && uniqueEmails.Add(commit.Author.Email) {
+			commitUser, _ := user_model.GetUserByEmail(ctx, commit.Author.Email)
+			if commitUser != nil && commitUser.ID == ctx.pr.Issue.Poster.ID {
+				return commit.Author, nil
+			}
+		}
+	}
+
+	return ctx.pr.Issue.Poster.NewGitSig(), nil
+}
+
 // doMergeStyleSquash squashes the tracking branch on the current HEAD (=base)
 func doMergeStyleSquash(ctx *mergeContext, message string) error {
-	cmdMerge := git.NewCommand(ctx, "merge", "--squash").AddDynamicArguments(trackingBranch)
+	sig, err := getAuthorSignatureSquash(ctx)
+	if err != nil {
+		return fmt.Errorf("getAuthorSignatureSquash: %w", err)
+	}
+
+	cmdMerge := gitcmd.NewCommand("merge", "--squash").AddDynamicArguments(tmpRepoTrackingBranch)
 	if err := runMergeCommand(ctx, repo_model.MergeStyleSquash, cmdMerge); err != nil {
 		log.Error("%-v Unable to merge --squash tracking into base: %v", ctx.pr, err)
 		return err
 	}
 
-	if err := ctx.pr.Issue.LoadPoster(ctx); err != nil {
-		log.Error("%-v Issue[%d].LoadPoster: %v", ctx.pr, ctx.pr.Issue.ID, err)
-		return fmt.Errorf("LoadPoster: %w", err)
-	}
-	sig := ctx.pr.Issue.Poster.NewGitSig()
 	if setting.Repository.PullRequest.AddCoCommitterTrailers && ctx.committer.String() != sig.String() {
 		// add trailer
-		message += fmt.Sprintf("\nCo-authored-by: %s\nCo-committed-by: %s\n", sig.String(), sig.String())
+		message = AddCommitMessageTailer(message, "Co-authored-by", sig.String())
+		message = AddCommitMessageTailer(message, "Co-committed-by", sig.String()) // FIXME: this one should be removed, it is not really used or widely used
 	}
-	cmdCommit := git.NewCommand(ctx, "commit").
+	cmdCommit := gitcmd.NewCommand("commit").
 		AddOptionFormat("--author='%s <%s>'", sig.Name, sig.Email).
-		AddOptionFormat("--message=%s", message)
-	if ctx.signKeyID == "" {
-		cmdCommit.AddArguments("--no-gpg-sign")
-	} else {
-		cmdCommit.AddOptionFormat("-S%s", ctx.signKeyID)
-	}
-	if err := cmdCommit.Run(ctx.RunOpts()); err != nil {
-		log.Error("git commit %-v: %v\n%s\n%s", ctx.pr, err, ctx.outbuf.String(), ctx.errbuf.String())
-		return fmt.Errorf("git commit [%s:%s -> %s:%s]: %w\n%s\n%s", ctx.pr.HeadRepo.FullName(), ctx.pr.HeadBranch, ctx.pr.BaseRepo.FullName(), ctx.pr.BaseBranch, err, ctx.outbuf.String(), ctx.errbuf.String())
+		AddOptionFormat("--message=%s", message).
+		AddArguments("--allow-empty")
+	addCommitSigningOptions(cmdCommit, ctx.signKey)
+	if err := ctx.PrepareGitCmd(cmdCommit).RunWithStderr(ctx); err != nil {
+		log.Error("git commit %-v: %v\n%s\n%s", ctx.pr, err, ctx.outbuf.String(), err.Stderr())
+		return fmt.Errorf("git commit [%s:%s -> %s:%s]: %w\n%s\n%s", ctx.pr.HeadRepo.FullName(), ctx.pr.HeadBranch, ctx.pr.BaseRepo.FullName(), ctx.pr.BaseBranch, err, ctx.outbuf.String(), err.Stderr())
 	}
 	ctx.outbuf.Reset()
-	ctx.errbuf.Reset()
 	return nil
 }

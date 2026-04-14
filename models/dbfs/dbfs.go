@@ -5,7 +5,10 @@ package dbfs
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"path"
+	"time"
 
 	"code.gitea.io/gitea/models/db"
 )
@@ -37,6 +40,9 @@ The DBFS solution:
 * In the future, when Gitea action needs to limit the log size (other CI/CD services also do so), it's easier to calculate the log file size.
 * Even sometimes the UI needs to render the tailing lines, the tailing lines can be found be counting the "\n" from the end of the file by seek.
   The seeking and finding is not the fastest way, but it's still acceptable and won't affect the performance too much.
+
+Limitations of the DBFS solution:
+* Not fully POSIX-compliant, some behaviors may be different from the real filesystem, especially for concurrent read/write
 */
 
 type dbfsMeta struct {
@@ -99,4 +105,30 @@ func Remove(ctx context.Context, name string) error {
 	}
 	defer f.Close()
 	return f.delete()
+}
+
+var _ fs.FileInfo = (*dbfsMeta)(nil)
+
+func (m *dbfsMeta) Name() string {
+	return path.Base(m.FullPath)
+}
+
+func (m *dbfsMeta) Size() int64 {
+	return m.FileSize
+}
+
+func (m *dbfsMeta) Mode() fs.FileMode {
+	return os.ModePerm
+}
+
+func (m *dbfsMeta) ModTime() time.Time {
+	return fileTimestampToTime(m.ModifyTimestamp)
+}
+
+func (m *dbfsMeta) IsDir() bool {
+	return false
+}
+
+func (m *dbfsMeta) Sys() any {
+	return nil
 }

@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_14 //nolint
+package v1_14
 
 import (
 	"xorm.io/xorm"
@@ -12,5 +12,5 @@ func AddBlockOnOfficialReviewRequests(x *xorm.Engine) error {
 		BlockOnOfficialReviewRequests bool `xorm:"NOT NULL DEFAULT false"`
 	}
 
-	return x.Sync2(new(ProtectedBranch))
+	return x.Sync(new(ProtectedBranch))
 }

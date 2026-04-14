@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"fmt"
@@ -18,8 +18,8 @@ func AddTableCommitStatusIndex(x *xorm.Engine) error {
 		MaxIndex int64  `xorm:"index"`
 	}
 
-	if err := x.Sync2(new(CommitStatusIndex)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(CommitStatusIndex)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 
 	sess := x.NewSession()

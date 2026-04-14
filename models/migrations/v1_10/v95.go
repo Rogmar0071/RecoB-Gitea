@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import "xorm.io/xorm"
 
@@ -15,5 +15,5 @@ func AddCrossReferenceColumns(x *xorm.Engine) error {
 		RefIsPull    bool
 	}
 
-	return x.Sync2(new(Comment))
+	return x.Sync(new(Comment))
 }

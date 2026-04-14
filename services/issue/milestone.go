@@ -5,12 +5,13 @@ package issue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"code.gitea.io/gitea/models/db"
 	issues_model "code.gitea.io/gitea/models/issues"
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/notification"
+	notify_service "code.gitea.io/gitea/services/notify"
 )
 
 func changeMilestoneAssign(ctx context.Context, doer *user_model.User, issue *issues_model.Issue, oldMilestoneID int64) error {
@@ -21,7 +22,7 @@ func changeMilestoneAssign(ctx context.Context, doer *user_model.User, issue *is
 			return fmt.Errorf("HasMilestoneByRepoID: %w", err)
 		}
 		if !has {
-			return fmt.Errorf("HasMilestoneByRepoID: issue doesn't exist")
+			return errors.New("HasMilestoneByRepoID: issue doesn't exist")
 		}
 	}
 
@@ -59,26 +60,21 @@ func changeMilestoneAssign(ctx context.Context, doer *user_model.User, issue *is
 		}
 	}
 
+	if issue.MilestoneID == 0 {
+		issue.Milestone = nil
+	}
+
 	return nil
 }
 
 // ChangeMilestoneAssign changes assignment of milestone for issue.
-func ChangeMilestoneAssign(issue *issues_model.Issue, doer *user_model.User, oldMilestoneID int64) (err error) {
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
-		return err
-	}
-	defer committer.Close()
-
-	if err = changeMilestoneAssign(ctx, doer, issue, oldMilestoneID); err != nil {
+func ChangeMilestoneAssign(ctx context.Context, issue *issues_model.Issue, doer *user_model.User, oldMilestoneID int64) (err error) {
+	if err := db.WithTx(ctx, func(dbCtx context.Context) error {
+		return changeMilestoneAssign(dbCtx, doer, issue, oldMilestoneID)
+	}); err != nil {
 		return err
 	}
 
-	if err = committer.Commit(); err != nil {
-		return fmt.Errorf("Commit: %w", err)
-	}
-
-	notification.NotifyIssueChangeMilestone(db.DefaultContext, doer, issue, oldMilestoneID)
-
+	notify_service.IssueChangeMilestone(ctx, doer, issue, oldMilestoneID)
 	return nil
 }

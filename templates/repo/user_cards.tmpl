@@ -1,4 +1,5 @@
-<div class="user-cards">
+{{/* need to reload after "watch/unwatch" or "star/unstar" fetch actions */}}
+<div class="user-cards" id="user-cards-container" data-fetch-trigger="fetch-reload">
 	{{if .CardsTitle}}
 	<h2 class="ui dividing header">
 		{{.CardsTitle}}
@@ -8,17 +9,17 @@
 		{{range .Cards}}
 			<li class="item ui segment">
 				<a href="{{.HomeLink}}">
-					{{avatar $.Context .}}
+					{{ctx.AvatarUtils.Avatar . 48}}
 				</a>
 				<h3 class="name"><a href="{{.HomeLink}}">{{.DisplayName}}</a></h3>
 
 				<div class="meta">
 					{{if .Website}}
-						{{svg "octicon-link"}} <a href="{{.Website}}" target="_blank" rel="noopener noreferrer">{{.Website}}</a>
+						{{svg "octicon-link"}} <a href="{{.Website}}" target="_blank">{{.Website}}</a>
 					{{else if .Location}}
 						{{svg "octicon-location"}} {{.Location}}
 					{{else}}
-						{{svg "octicon-clock"}} {{$.locale.Tr "user.join_on"}} <time data-format="short-date" datetime="{{.CreatedUnix.FormatLong}}">{{.CreatedUnix.FormatShort}}</time>
+						{{svg "octicon-calendar"}} {{ctx.Locale.Tr "user.joined_on" (DateUtils.AbsoluteShort .CreatedUnix)}}
 					{{end}}
 				</div>
 			</li>

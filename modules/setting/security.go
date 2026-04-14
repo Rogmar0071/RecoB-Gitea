@@ -11,39 +11,45 @@ import (
 	"code.gitea.io/gitea/modules/auth/password/hash"
 	"code.gitea.io/gitea/modules/generate"
 	"code.gitea.io/gitea/modules/log"
-
-	ini "gopkg.in/ini.v1"
 )
 
+// Security settings
+var Security = struct {
+	// TODO: move more settings to this struct in future
+	XFrameOptions string
+}{
+	XFrameOptions: "SAMEORIGIN",
+}
+
 var (
-	// Security settings
 	InstallLock                        bool
 	SecretKey                          string
 	InternalToken                      string // internal access token
 	LogInRememberDays                  int
-	CookieUserName                     string
 	CookieRememberName                 string
 	ReverseProxyAuthUser               string
 	ReverseProxyAuthEmail              string
 	ReverseProxyAuthFullName           string
 	ReverseProxyLimit                  int
+	ReverseProxyLogoutRedirect         string
 	ReverseProxyTrustedProxies         []string
 	MinPasswordLength                  int
 	ImportLocalPaths                   bool
-	DisableGitHooks                    bool
+	DisableGitHooks                    = true
 	DisableWebhooks                    bool
 	OnlyAllowPushIfGiteaEnvironmentSet bool
 	PasswordComplexity                 []string
 	PasswordHashAlgo                   string
 	PasswordCheckPwn                   bool
 	SuccessfulTokensCacheSize          int
-	CSRFCookieName                     = "_csrf"
-	CSRFCookieHTTPOnly                 = true
+	DisableQueryAuthToken              bool
+	RecordUserSignupMetadata           = false
+	TwoFactorAuthEnforced              = false
 )
 
 // loadSecret load the secret from ini by uriKey or verbatimKey, only one of them could be set
 // If the secret is loaded from uriKey (file), the file should be non-empty, to guarantee the behavior stable and clear.
-func loadSecret(sec *ini.Section, uriKey, verbatimKey string) string {
+func loadSecret(sec ConfigSection, uriKey, verbatimKey string) string {
 	// don't allow setting both URI and verbatim string
 	uri := sec.Key(uriKey).String()
 	verbatim := sec.Key(verbatimKey).String()
@@ -78,34 +84,38 @@ func loadSecret(sec *ini.Section, uriKey, verbatimKey string) string {
 
 	// only file URIs are allowed
 	default:
-		log.Fatal("Unsupported URI-Scheme %q (INTERNAL_TOKEN_URI = %q)", tempURI.Scheme, uri)
+		log.Fatal("Unsupported URI-Scheme %q (%q = %q)", tempURI.Scheme, uriKey, uri)
 		return ""
 	}
 }
 
 // generateSaveInternalToken generates and saves the internal token to app.ini
-func generateSaveInternalToken() {
+func generateSaveInternalToken(rootCfg ConfigProvider) {
 	token, err := generate.NewInternalToken()
 	if err != nil {
 		log.Fatal("Error generate internal token: %v", err)
 	}
 
 	InternalToken = token
-	CreateOrAppendToCustomConf("security.INTERNAL_TOKEN", func(cfg *ini.File) {
-		cfg.Section("security").Key("INTERNAL_TOKEN").SetValue(token)
-	})
+	saveCfg, err := rootCfg.PrepareSaving()
+	if err != nil {
+		log.Fatal("Error saving internal token: %v", err)
+	}
+	rootCfg.Section("security").Key("INTERNAL_TOKEN").SetValue(token)
+	saveCfg.Section("security").Key("INTERNAL_TOKEN").SetValue(token)
+	if err = saveCfg.Save(); err != nil {
+		log.Fatal("Error saving internal token: %v", err)
+	}
 }
 
 func loadSecurityFrom(rootCfg ConfigProvider) {
 	sec := rootCfg.Section("security")
-	InstallLock = sec.Key("INSTALL_LOCK").MustBool(false)
-	LogInRememberDays = sec.Key("LOGIN_REMEMBER_DAYS").MustInt(7)
-	CookieUserName = sec.Key("COOKIE_USERNAME").MustString("gitea_awesome")
+	LogInRememberDays = sec.Key("LOGIN_REMEMBER_DAYS").MustInt(31)
 	SecretKey = loadSecret(sec, "SECRET_KEY_URI", "SECRET_KEY")
 	if SecretKey == "" {
 		// FIXME: https://github.com/go-gitea/gitea/issues/16832
 		// Until it supports rotating an existing secret key, we shouldn't move users off of the widely used default value
-		SecretKey = "!#@FDEWREWR&*(" //nolint:gosec
+		SecretKey = "!#@FDEWREWR&*("
 	}
 
 	CookieRememberName = sec.Key("COOKIE_REMEMBER_NAME").MustString("gitea_incredible")
@@ -115,12 +125,13 @@ func loadSecurityFrom(rootCfg ConfigProvider) {
 	ReverseProxyAuthFullName = sec.Key("REVERSE_PROXY_AUTHENTICATION_FULL_NAME").MustString("X-WEBAUTH-FULLNAME")
 
 	ReverseProxyLimit = sec.Key("REVERSE_PROXY_LIMIT").MustInt(1)
+	ReverseProxyLogoutRedirect = sec.Key("REVERSE_PROXY_LOGOUT_REDIRECT").String()
 	ReverseProxyTrustedProxies = sec.Key("REVERSE_PROXY_TRUSTED_PROXIES").Strings(",")
 	if len(ReverseProxyTrustedProxies) == 0 {
 		ReverseProxyTrustedProxies = []string{"127.0.0.0/8", "::1/128"}
 	}
 
-	MinPasswordLength = sec.Key("MIN_PASSWORD_LENGTH").MustInt(6)
+	MinPasswordLength = sec.Key("MIN_PASSWORD_LENGTH").MustInt(8)
 	ImportLocalPaths = sec.Key("IMPORT_LOCAL_PATHS").MustBool(false)
 	DisableGitHooks = sec.Key("DISABLE_GIT_HOOKS").MustBool(true)
 	DisableWebhooks = sec.Key("DISABLE_WEBHOOKS").MustBool(false)
@@ -133,15 +144,30 @@ func loadSecurityFrom(rootCfg ConfigProvider) {
 		log.Fatal("The provided password hash algorithm was invalid: %s", sec.Key("PASSWORD_HASH_ALGO").MustString(""))
 	}
 
-	CSRFCookieHTTPOnly = sec.Key("CSRF_COOKIE_HTTP_ONLY").MustBool(true)
 	PasswordCheckPwn = sec.Key("PASSWORD_CHECK_PWN").MustBool(false)
 	SuccessfulTokensCacheSize = sec.Key("SUCCESSFUL_TOKENS_CACHE_SIZE").MustInt(20)
+
+	deprecatedSetting(rootCfg, "cors", "X_FRAME_OPTIONS", "security", "X_FRAME_OPTIONS", "v1.26.0")
+	if sec.HasKey("X_FRAME_OPTIONS") {
+		Security.XFrameOptions = sec.Key("X_FRAME_OPTIONS").MustString(Security.XFrameOptions)
+	} else {
+		Security.XFrameOptions = rootCfg.Section("cors").Key("X_FRAME_OPTIONS").MustString(Security.XFrameOptions)
+	}
+
+	twoFactorAuth := sec.Key("TWO_FACTOR_AUTH").String()
+	switch twoFactorAuth {
+	case "":
+	case "enforced":
+		TwoFactorAuthEnforced = true
+	default:
+		log.Fatal("Invalid two-factor auth option: %s", twoFactorAuth)
+	}
 
 	InternalToken = loadSecret(sec, "INTERNAL_TOKEN_URI", "INTERNAL_TOKEN")
 	if InstallLock && InternalToken == "" {
 		// if Gitea has been installed but the InternalToken hasn't been generated (upgrade from an old release), we should generate
 		// some users do cluster deployment, they still depend on this auto-generating behavior.
-		generateSaveInternalToken()
+		generateSaveInternalToken(rootCfg)
 	}
 
 	cfgdata := sec.Key("PASSWORD_COMPLEXITY").Strings(",")
@@ -154,5 +180,17 @@ func loadSecurityFrom(rootCfg ConfigProvider) {
 		if name != "" {
 			PasswordComplexity = append(PasswordComplexity, name)
 		}
+	}
+
+	sectionHasDisableQueryAuthToken := sec.HasKey("DISABLE_QUERY_AUTH_TOKEN")
+
+	// TODO: default value should be true in future releases
+	DisableQueryAuthToken = sec.Key("DISABLE_QUERY_AUTH_TOKEN").MustBool(false)
+
+	RecordUserSignupMetadata = sec.Key("RECORD_USER_SIGNUP_METADATA").MustBool(false)
+
+	// warn if the setting is set to false explicitly
+	if sectionHasDisableQueryAuthToken && !DisableQueryAuthToken {
+		log.Warn("Enabling Query API Auth tokens is not recommended. DISABLE_QUERY_AUTH_TOKEN will default to true in gitea 1.23 and will be removed in gitea 1.24.")
 	}
 }

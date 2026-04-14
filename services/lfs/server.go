@@ -13,26 +13,28 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
-	actions_model "code.gitea.io/gitea/models/actions"
+	auth_model "code.gitea.io/gitea/models/auth"
 	git_model "code.gitea.io/gitea/models/git"
-	"code.gitea.io/gitea/models/perm"
+	perm_model "code.gitea.io/gitea/models/perm"
 	access_model "code.gitea.io/gitea/models/perm/access"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unit"
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/context"
+	"code.gitea.io/gitea/modules/auth/httpauth"
+	"code.gitea.io/gitea/modules/httplib"
 	"code.gitea.io/gitea/modules/json"
 	lfs_module "code.gitea.io/gitea/modules/lfs"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/storage"
+	"code.gitea.io/gitea/services/context"
 
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // requestContext contain variables from the HTTP request.
@@ -40,6 +42,7 @@ type requestContext struct {
 	User          string
 	Repo          string
 	Authorization string
+	RepoGitURL    string
 }
 
 // Claims is a JWT Token Claims
@@ -50,19 +53,46 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+type AuthTokenOptions struct {
+	Op     string
+	UserID int64
+	RepoID int64
+}
+
+func GetLFSAuthTokenWithBearer(opts AuthTokenOptions) (string, error) {
+	now := time.Now()
+	claims := Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now.Add(setting.LFS.HTTPAuthExpiry)),
+			NotBefore: jwt.NewNumericDate(now),
+		},
+		RepoID: opts.RepoID,
+		Op:     opts.Op,
+		UserID: opts.UserID,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// Sign and get the complete encoded token as a string using the secret
+	tokenString, err := token.SignedString(setting.LFS.JWTSecretBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign LFS JWT token: %w", err)
+	}
+	return "Bearer " + tokenString, nil
+}
+
 // DownloadLink builds a URL to download the object.
 func (rc *requestContext) DownloadLink(p lfs_module.Pointer) string {
-	return setting.AppURL + path.Join(url.PathEscape(rc.User), url.PathEscape(rc.Repo+".git"), "info/lfs/objects", url.PathEscape(p.Oid))
+	return rc.RepoGitURL + "/info/lfs/objects/" + url.PathEscape(p.Oid)
 }
 
 // UploadLink builds a URL to upload the object.
 func (rc *requestContext) UploadLink(p lfs_module.Pointer) string {
-	return setting.AppURL + path.Join(url.PathEscape(rc.User), url.PathEscape(rc.Repo+".git"), "info/lfs/objects", url.PathEscape(p.Oid), strconv.FormatInt(p.Size, 10))
+	return rc.RepoGitURL + "/info/lfs/objects/" + url.PathEscape(p.Oid) + "/" + strconv.FormatInt(p.Size, 10)
 }
 
 // VerifyLink builds a URL for verifying the object.
 func (rc *requestContext) VerifyLink(p lfs_module.Pointer) string {
-	return setting.AppURL + path.Join(url.PathEscape(rc.User), url.PathEscape(rc.Repo+".git"), "info/lfs/verify")
+	return rc.RepoGitURL + "/info/lfs/verify"
 }
 
 // CheckAcceptMediaType checks if the client accepts the LFS media type.
@@ -76,10 +106,12 @@ func CheckAcceptMediaType(ctx *context.Context) {
 	}
 }
 
+var rangeHeaderRegexp = regexp.MustCompile(`bytes=(\d+)-(\d*).*`)
+
 // DownloadHandler gets the content from the content store
 func DownloadHandler(ctx *context.Context) {
 	rc := getRequestContext(ctx)
-	p := lfs_module.Pointer{Oid: ctx.Params("oid")}
+	p := lfs_module.Pointer{Oid: ctx.PathParam("oid")}
 
 	meta := getAuthenticatedMeta(ctx, rc, p, false)
 	if meta == nil {
@@ -91,8 +123,7 @@ func DownloadHandler(ctx *context.Context) {
 	toByte = meta.Size - 1
 	statusCode := http.StatusOK
 	if rangeHdr := ctx.Req.Header.Get("Range"); rangeHdr != "" {
-		regex := regexp.MustCompile(`bytes=(\d+)\-(\d*).*`)
-		match := regex.FindStringSubmatch(rangeHdr)
+		match := rangeHeaderRegexp.FindStringSubmatch(rangeHdr)
 		if len(match) > 1 {
 			statusCode = http.StatusPartialContent
 			fromByte, _ = strconv.ParseInt(match[1], 10, 32)
@@ -109,7 +140,7 @@ func DownloadHandler(ctx *context.Context) {
 				}
 			}
 
-			ctx.Resp.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fromByte, toByte, meta.Size-fromByte))
+			ctx.Resp.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", fromByte, toByte, meta.Size))
 			ctx.Resp.Header().Set("Access-Control-Expose-Headers", "Content-Range")
 		}
 	}
@@ -132,14 +163,16 @@ func DownloadHandler(ctx *context.Context) {
 	}
 
 	contentLength := toByte + 1 - fromByte
-	ctx.Resp.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
+	contentLengthStr := strconv.FormatInt(contentLength, 10)
+	ctx.Resp.Header().Set("Content-Length", contentLengthStr)
+	ctx.Resp.Header().Set("X-Gitea-LFS-Content-Length", contentLengthStr) // we need this header to make sure it won't be affected by reverse proxy or compression
 	ctx.Resp.Header().Set("Content-Type", "application/octet-stream")
 
-	filename := ctx.Params("filename")
+	filename := ctx.PathParam("filename")
 	if len(filename) > 0 {
 		decodedFilename, err := base64.RawURLEncoding.DecodeString(filename)
 		if err == nil {
-			ctx.Resp.Header().Set("Content-Disposition", "attachment; filename=\""+string(decodedFilename)+"\"")
+			ctx.Resp.Header().Set("Content-Disposition", httplib.EncodeContentDispositionAttachment(string(decodedFilename)))
 			ctx.Resp.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		}
 	}
@@ -160,11 +193,12 @@ func BatchHandler(ctx *context.Context) {
 	}
 
 	var isUpload bool
-	if br.Operation == "upload" {
+	switch br.Operation {
+	case "upload":
 		isUpload = true
-	} else if br.Operation == "download" {
+	case "download":
 		isUpload = false
-	} else {
+	default:
 		log.Trace("Attempt to BATCH with invalid operation: %s", br.Operation)
 		writeStatus(ctx, http.StatusBadRequest)
 		return
@@ -174,6 +208,11 @@ func BatchHandler(ctx *context.Context) {
 
 	repository := getAuthenticatedRepository(ctx, rc, isUpload)
 	if repository == nil {
+		return
+	}
+
+	if setting.LFS.MaxBatchSize != 0 && len(br.Objects) > setting.LFS.MaxBatchSize {
+		writeStatus(ctx, http.StatusRequestEntityTooLarge)
 		return
 	}
 
@@ -192,7 +231,7 @@ func BatchHandler(ctx *context.Context) {
 
 		exists, err := contentStore.Exists(p)
 		if err != nil {
-			log.Error("Unable to check if LFS OID[%s] exist. Error: %v", p.Oid, rc.User, rc.Repo, err)
+			log.Error("Unable to check if LFS object with ID '%s' exists for %s/%s. Error: %v", p.Oid, rc.User, rc.Repo, err)
 			writeStatus(ctx, http.StatusInternalServerError)
 			return
 		}
@@ -230,7 +269,7 @@ func BatchHandler(ctx *context.Context) {
 					return
 				}
 				if accessible {
-					_, err := git_model.NewLFSMetaObject(ctx, &git_model.LFSMetaObject{Pointer: p, RepositoryID: repository.ID})
+					_, err := git_model.NewLFSMetaObject(ctx, repository.ID, p)
 					if err != nil {
 						log.Error("Unable to create LFS MetaObject [%s] for %s/%s. Error: %v", p.Oid, rc.User, rc.Repo, err)
 						writeStatus(ctx, http.StatusInternalServerError)
@@ -270,9 +309,9 @@ func BatchHandler(ctx *context.Context) {
 func UploadHandler(ctx *context.Context) {
 	rc := getRequestContext(ctx)
 
-	p := lfs_module.Pointer{Oid: ctx.Params("oid")}
+	p := lfs_module.Pointer{Oid: ctx.PathParam("oid")}
 	var err error
-	if p.Size, err = strconv.ParseInt(ctx.Params("size"), 10, 64); err != nil {
+	if p.Size, err = strconv.ParseInt(ctx.PathParam("size"), 10, 64); err != nil {
 		writeStatusMessage(ctx, http.StatusUnprocessableEntity, err.Error())
 	}
 
@@ -323,7 +362,7 @@ func UploadHandler(ctx *context.Context) {
 			log.Error("Error putting LFS MetaObject [%s] into content store. Error: %v", p.Oid, err)
 			return err
 		}
-		_, err := git_model.NewLFSMetaObject(ctx, &git_model.LFSMetaObject{Pointer: p, RepositoryID: repository.ID})
+		_, err := git_model.NewLFSMetaObject(ctx, repository.ID, p)
 		return err
 	}
 
@@ -373,7 +412,7 @@ func VerifyHandler(ctx *context.Context) {
 	writeStatus(ctx, status)
 }
 
-func decodeJSON(req *http.Request, v interface{}) error {
+func decodeJSON(req *http.Request, v any) error {
 	defer req.Body.Close()
 
 	dec := json.NewDecoder(req.Body)
@@ -381,10 +420,13 @@ func decodeJSON(req *http.Request, v interface{}) error {
 }
 
 func getRequestContext(ctx *context.Context) *requestContext {
+	ownerName := ctx.PathParam("username")
+	repoName := strings.TrimSuffix(ctx.PathParam("reponame"), ".git")
 	return &requestContext{
-		User:          ctx.Params("username"),
-		Repo:          strings.TrimSuffix(ctx.Params("reponame"), ".git"),
+		User:          ownerName,
+		Repo:          repoName,
 		Authorization: ctx.Req.Header.Get("Authorization"),
+		RepoGitURL:    httplib.GuessCurrentAppURL(ctx) + url.PathEscape(ownerName) + "/" + url.PathEscape(repoName+".git"),
 	}
 }
 
@@ -423,7 +465,12 @@ func getAuthenticatedRepository(ctx *context.Context, rc *requestContext, requir
 		return nil
 	}
 
-	context.CheckRepoScopedToken(ctx, repository)
+	if requireWrite {
+		context.CheckRepoScopedToken(ctx, repository, auth_model.Write)
+	} else {
+		context.CheckRepoScopedToken(ctx, repository, auth_model.Read)
+	}
+
 	if ctx.Written() {
 		return nil
 	}
@@ -437,42 +484,33 @@ func buildObjectResponse(rc *requestContext, pointer lfs_module.Pointer, downloa
 		rep.Error = err
 	} else {
 		rep.Actions = make(map[string]*lfs_module.Link)
-
-		header := make(map[string]string)
-
-		if len(rc.Authorization) > 0 {
-			header["Authorization"] = rc.Authorization
-		}
-
 		if download {
 			var link *lfs_module.Link
-			if setting.LFS.ServeDirect {
+			if setting.LFS.Storage.ServeDirect() {
 				// If we have a signed url (S3, object storage), redirect to this directly.
-				u, err := storage.LFS.URL(pointer.RelativePath(), pointer.Oid)
+				// DO NOT USE the http POST method coming from the lfs batch endpoint
+				u, err := storage.LFS.ServeDirectURL(pointer.RelativePath(), pointer.Oid, http.MethodGet, nil)
 				if u != nil && err == nil {
-					// Presigned url does not need the Authorization header
-					// https://github.com/go-gitea/gitea/issues/21525
-					delete(header, "Authorization")
-					link = &lfs_module.Link{Href: u.String(), Header: header}
+					link = lfs_module.NewLink(u.String()) // Presigned url does not need the Authorization header
 				}
 			}
 			if link == nil {
-				link = &lfs_module.Link{Href: rc.DownloadLink(pointer), Header: header}
+				link = lfs_module.NewLink(rc.DownloadLink(pointer)).WithHeader("Authorization", rc.Authorization)
 			}
 			rep.Actions["download"] = link
 		}
 		if upload {
-			rep.Actions["upload"] = &lfs_module.Link{Href: rc.UploadLink(pointer), Header: header}
+			// Set Transfer-Encoding header to enable chunked uploads. Required by git-lfs client to do chunked transfer.
+			// See: https://github.com/git-lfs/git-lfs/blob/main/tq/basic_upload.go#L58-59
+			rep.Actions["upload"] = lfs_module.NewLink(rc.UploadLink(pointer)).
+				WithHeader("Authorization", rc.Authorization).
+				WithHeader("Transfer-Encoding", "chunked")
 
-			verifyHeader := make(map[string]string)
-			for key, value := range header {
-				verifyHeader[key] = value
-			}
-
-			// This is only needed to workaround https://github.com/git-lfs/git-lfs/issues/3662
-			verifyHeader["Accept"] = lfs_module.MediaType
-
-			rep.Actions["verify"] = &lfs_module.Link{Href: rc.VerifyLink(pointer), Header: verifyHeader}
+			// "Accept" header is the workaround for git-lfs < 2.8.0 (before 2019).
+			// This workaround could be removed in the future: https://github.com/git-lfs/git-lfs/issues/3662
+			rep.Actions["verify"] = lfs_module.NewLink(rc.VerifyLink(pointer)).
+				WithHeader("Authorization", rc.Authorization).
+				WithHeader("Accept", lfs_module.AcceptHeader)
 		}
 	}
 	return rep
@@ -495,42 +533,39 @@ func writeStatusMessage(ctx *context.Context, status int, message string) {
 }
 
 // authenticate uses the authorization string to determine whether
-// or not to proceed. This server assumes an HTTP Basic auth format.
+// to proceed. This server assumes an HTTP Basic auth format.
 func authenticate(ctx *context.Context, repository *repo_model.Repository, authorization string, requireSigned, requireWrite bool) bool {
-	accessMode := perm.AccessModeRead
+	accessMode := perm_model.AccessModeRead
 	if requireWrite {
-		accessMode = perm.AccessModeWrite
+		accessMode = perm_model.AccessModeWrite
 	}
 
-	if ctx.Data["IsActionsToken"] == true {
-		taskID := ctx.Data["ActionsTaskID"].(int64)
-		task, err := actions_model.GetTaskByID(ctx, taskID)
+	if taskID, ok := user_model.GetActionsUserTaskID(ctx.Doer); ok {
+		perm, err := access_model.GetActionsUserRepoPermission(ctx, repository, ctx.Doer, taskID)
 		if err != nil {
-			log.Error("Unable to GetTaskByID for task[%d] Error: %v", taskID, err)
+			log.Error("Unable to GetActionsUserRepoPermission for task[%d] Error: %v", taskID, err)
 			return false
 		}
-		if task.RepoID != repository.ID {
-			return false
-		}
-
-		if task.IsForkPullRequest {
-			return accessMode <= perm.AccessModeRead
-		}
-		return accessMode <= perm.AccessModeWrite
+		return perm.CanAccess(accessMode, unit.TypeCode)
 	}
 
-	// ctx.IsSigned is unnecessary here, this will be checked in perm.CanAccess
-	perm, err := access_model.GetUserRepoPermission(ctx, repository, ctx.Doer)
+	// it works for both anonymous request and signed-in user, then perm.CanAccess will do the permission check
+	perm, err := access_model.GetDoerRepoPermission(ctx, repository, ctx.Doer)
 	if err != nil {
-		log.Error("Unable to GetUserRepoPermission for user %-v in repo %-v Error: %v", ctx.Doer, repository, err)
+		log.Error("Unable to GetDoerRepoPermission for user %-v in repo %-v Error: %v", ctx.Doer, repository, err)
 		return false
 	}
 
-	canRead := perm.CanAccess(accessMode, unit.TypeCode)
-	if canRead && (!requireSigned || ctx.IsSigned) {
+	canAccess := perm.CanAccess(accessMode, unit.TypeCode)
+	// if it doesn't require sign-in and anonymous user has access, return true
+	// if the user is already signed in (for example: by session auth method), and the doer can access, return true
+	if canAccess && (!requireSigned || ctx.IsSigned) {
 		return true
 	}
 
+	// now, either sign-in is required or the ctx.Doer cannot access, check the LFS token
+	// however, "ctx.Doer exists but cannot access then check LFS token" should not really happen:
+	// * why a request can be sent with both valid user session and valid LFS token then use LFS token to access?
 	user, err := parseToken(ctx, authorization, repository, accessMode)
 	if err != nil {
 		// Most of these are Warn level - the true internal server errors are logged in parseToken already
@@ -541,31 +576,28 @@ func authenticate(ctx *context.Context, repository *repo_model.Repository, autho
 	return true
 }
 
-func handleLFSToken(ctx stdCtx.Context, tokenSHA string, target *repo_model.Repository, mode perm.AccessMode) (*user_model.User, error) {
-	if !strings.Contains(tokenSHA, ".") {
-		return nil, nil
-	}
-	token, err := jwt.ParseWithClaims(tokenSHA, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+func handleLFSToken(ctx stdCtx.Context, tokenSHA string, target *repo_model.Repository, mode perm_model.AccessMode) (*user_model.User, error) {
+	token, err := jwt.ParseWithClaims(tokenSHA, &Claims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return setting.LFS.JWTSecretBytes, nil
 	})
 	if err != nil {
-		return nil, nil
+		return nil, errors.New("invalid token")
 	}
 
 	claims, claimsOk := token.Claims.(*Claims)
 	if !token.Valid || !claimsOk {
-		return nil, fmt.Errorf("invalid token claim")
+		return nil, errors.New("invalid token claim")
 	}
 
 	if claims.RepoID != target.ID {
-		return nil, fmt.Errorf("invalid token claim")
+		return nil, errors.New("invalid token claim")
 	}
 
-	if mode == perm.AccessModeWrite && claims.Op != "upload" {
-		return nil, fmt.Errorf("invalid token claim")
+	if mode == perm_model.AccessModeWrite && claims.Op != "upload" {
+		return nil, errors.New("invalid token claim")
 	}
 
 	u, err := user_model.GetUserByID(ctx, claims.UserID)
@@ -576,26 +608,18 @@ func handleLFSToken(ctx stdCtx.Context, tokenSHA string, target *repo_model.Repo
 	return u, nil
 }
 
-func parseToken(ctx stdCtx.Context, authorization string, target *repo_model.Repository, mode perm.AccessMode) (*user_model.User, error) {
+func parseToken(ctx stdCtx.Context, authorization string, target *repo_model.Repository, mode perm_model.AccessMode) (*user_model.User, error) {
 	if authorization == "" {
-		return nil, fmt.Errorf("no token")
+		return nil, errors.New("no token")
 	}
-
-	parts := strings.SplitN(authorization, " ", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("no token")
+	parsed, ok := httpauth.ParseAuthorizationHeader(authorization)
+	if !ok || parsed.BearerToken == nil {
+		return nil, errors.New("token not found")
 	}
-	tokenSHA := parts[1]
-	switch strings.ToLower(parts[0]) {
-	case "bearer":
-		fallthrough
-	case "token":
-		return handleLFSToken(ctx, tokenSHA, target, mode)
-	}
-	return nil, fmt.Errorf("token not found")
+	return handleLFSToken(ctx, parsed.BearerToken.Token, target, mode)
 }
 
 func requireAuth(ctx *context.Context) {
-	ctx.Resp.Header().Set("WWW-Authenticate", "Basic realm=gitea-lfs")
+	ctx.Resp.Header().Set("WWW-Authenticate", `Basic realm="gitea-lfs"`)
 	writeStatus(ctx, http.StatusUnauthorized)
 }

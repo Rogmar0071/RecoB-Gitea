@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_14 //nolint
+package v1_14
 
 import (
 	"code.gitea.io/gitea/models/migrations/base"
@@ -18,7 +18,7 @@ func ConvertTopicNameFrom25To50(x *xorm.Engine) error {
 		UpdatedUnix int64 `xorm:"INDEX updated"`
 	}
 
-	if err := x.Sync2(new(Topic)); err != nil {
+	if err := x.Sync(new(Topic)); err != nil {
 		return err
 	}
 

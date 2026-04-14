@@ -1,177 +1,178 @@
+version: "2"
+output:
+  sort-order:
+    - file
 linters:
+  default: none
   enable:
     - bidichk
-    # - deadcode # deprecated - https://github.com/golangci/golangci-lint/issues/1841
+    - bodyclose
     - depguard
     - dupl
     - errcheck
+    - forbidigo
+    - gocheckcompilerdirectives
     - gocritic
-    # - gocyclo # The cyclomatic complexety of a lot of functions is too high, we should refactor those another time.
-    - gofmt
-    - gofumpt
-    - gosimple
     - govet
     - ineffassign
+    - mirror
+    - modernize
     - nakedret
+    - nilnil
     - nolintlint
+    - perfsprint
     - revive
     - staticcheck
-    # - structcheck # deprecated - https://github.com/golangci/golangci-lint/issues/1841
-    - stylecheck
-    - typecheck
+    - testifylint
     - unconvert
+    - unparam
     - unused
-    # - varcheck # deprecated - https://github.com/golangci/golangci-lint/issues/1841
-    # - wastedassign # disabled - https://github.com/golangci/golangci-lint/issues/2649
-  enable-all: false
-  disable-all: true
-  fast: false
-
-run:
-  go: "1.20"
-  timeout: 10m
-  skip-dirs:
-    - node_modules
-    - public
-    - web_src
-
-linters-settings:
-  stylecheck:
-    checks: ["all", "-ST1005", "-ST1003"]
-  nakedret:
-    max-func-lines: 0
-  gocritic:
-    disabled-checks:
-      - ifElseChain
-      - singleCaseSwitch # Every time this occurred in the code, there  was no other way.
-  revive:
-    ignore-generated-header: false
-    severity: warning
-    confidence: 0.8
-    errorCode: 1
-    warningCode: 1
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: encoding/json
+              desc: use gitea's modules/json instead of encoding/json
+            - pkg: github.com/unknwon/com
+              desc: use gitea's util and replacements
+            - pkg: io/ioutil
+              desc: use os or io instead
+            - pkg: golang.org/x/exp
+              desc: it's experimental and unreliable
+            - pkg: code.gitea.io/gitea/modules/git/internal
+              desc: do not use the internal package, use AddXxx function instead
+            - pkg: gopkg.in/ini.v1
+              desc: do not use the ini package, use gitea's config system instead
+            - pkg: gitea.com/go-chi/cache
+              desc: do not use the go-chi cache package, use gitea's cache system
+            - pkg: github.com/pkg/errors
+              desc: use builtin errors package instead
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+    gocritic:
+      enabled-checks:
+        - equalFold
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch # Every time this occurred in the code, there was no other way.
+        - deprecatedComment # conflicts with go-swagger comments
+    revive:
+      severity: error
+      rules:
+        - name: blank-imports
+        - name: constant-logical-expr
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-lines
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: identical-branches
+        - name: if-return
+        - name: increment-decrement
+        - name: modifies-value-receiver
+        - name: package-comments
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: var-declaration
+        - name: var-naming
+          arguments:
+            - [] # AllowList - do not remove as args for the rule are positional and won't work without lists first
+            - [] # DenyList
+            - - skip-package-name-checks: true # supress errors from underscore in migration packages
+    staticcheck:
+      checks:
+        - all
+        - -ST1003
+        - -ST1005
+        - -QF1001
+        - -QF1006
+        - -QF1008
+    testifylint:
+      disable:
+        - go-require
+        - require-error
+    usetesting:
+      os-temp-dir: true
+    perfsprint:
+      concat-loop: false
+    govet:
+      enable:
+        - nilness
+        - unusedwrite
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: duplicated-imports
-      - name: modifies-value-receiver
-  gofumpt:
-    extra-rules: true
-    lang-version: "1.20"
-  depguard:
-    list-type: denylist
-    # Check the list against standard lib.
-    include-go-root: true
-    packages-with-error-message:
-      - encoding/json: "use gitea's modules/json instead of encoding/json"
-      - github.com/unknwon/com: "use gitea's util and replacements"
-      - io/ioutil: "use os or io instead"
-      - golang.org/x/exp: "it's experimental and unreliable."
-      - code.gitea.io/gitea/modules/git/internal: "do not use the internal package, use AddXxx function instead"
-
+      - linters:
+          - dupl
+          - errcheck
+          - staticcheck
+          - unparam
+        path: _test\.go
+      - linters:
+          - dupl
+          - errcheck
+        path: models/migrations/v
+      - linters:
+          - forbidigo
+        path: cmd
+      - linters:
+          - dupl
+        text: (?i)webhook
+      - linters:
+          - gocritic
+        text: (?i)`ID' should not be capitalized
+      - linters:
+          - unused
+        text: (?i)swagger
+      - linters:
+          - gocritic
+        text: '(?i)commentFormatting: put a space between `//` and comment text'
+      - linters:
+          - gocritic
+        text: '(?i)exitAfterDefer:'
+    paths:
+      - node_modules
+      - .venv
+      - public
+      - web_src
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Exclude some linters from running on tests files.
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - dupl
-        - gosec
-        - unparam
-        - staticcheck
-    - path: models/migrations/v
-      linters:
-        - gocyclo
-        - errcheck
-        - dupl
-        - gosec
-    - linters:
-        - dupl
-      text: "webhook"
-    - linters:
-        - gocritic
-      text: "`ID' should not be capitalized"
-    - path: modules/templates/helper.go
-      linters:
-        - gocritic
-    - linters:
-        - unused
-        - deadcode
-      text: "swagger"
-    - path: contrib/pr/checkout.go
-      linters:
-        - errcheck
-    - path: models/issue.go
-      linters:
-        - errcheck
-    - path: models/migrations/
-      linters:
-        - errcheck
-    - path: modules/log/
-      linters:
-        - errcheck
-    - path: routers/api/v1/repo/issue_subscription.go
-      linters:
-        - dupl
-    - path: routers/repo/view.go
-      linters:
-        - dupl
-    - path: models/migrations/
-      linters:
-        - unused
-    - linters:
-        - staticcheck
-      text: "argument x is overwritten before first use"
-    - path: modules/httplib/httplib.go
-      linters:
-        - staticcheck
-    # Enabling this would require refactoring the methods and how they are called.
-    - path: models/issue_comment_list.go
-      linters:
-        - dupl
-    - path: models/update.go
-      linters:
-        - unused
-    - path: cmd/dump.go
-      linters:
-        - dupl
-    - path: services/webhook/webhook.go
-      linters:
-        - structcheck
-    - text: "commentFormatting: put a space between `//` and comment text"
-      linters:
-        - gocritic
-    - text: "exitAfterDefer:"
-      linters:
-        - gocritic
-    - path: modules/graceful/manager_windows.go
-      linters:
-        - staticcheck
-      text: "svc.IsAnInteractiveSession is deprecated: Use IsWindowsService instead."
-    - path: models/user/openid.go
-      linters:
-        - golint
-    - path: models/user/badge.go
-      linters:
-        - revive
-      text: "exported: type name will be used as user.UserBadge by other packages, and that stutters; consider calling this Badge"
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - node_modules
+      - .venv
+      - public
+      - web_src
+      - third_party$
+      - builtin$
+      - examples$
+
+run:
+  timeout: 10m

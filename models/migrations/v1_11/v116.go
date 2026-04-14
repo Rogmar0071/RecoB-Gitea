@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_11 //nolint
+package v1_11
 
 import (
 	"xorm.io/xorm"
@@ -24,7 +24,7 @@ func ExtendTrackedTimes(x *xorm.Engine) error {
 		return err
 	}
 
-	if err := sess.Sync2(new(TrackedTime)); err != nil {
+	if err := sess.Sync(new(TrackedTime)); err != nil {
 		return err
 	}
 

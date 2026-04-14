@@ -16,7 +16,6 @@ import (
 	"time"
 
 	auth_model "code.gitea.io/gitea/models/auth"
-	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/models/packages"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
@@ -28,15 +27,16 @@ import (
 
 func TestPackagePub(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()
+
 	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
 
-	token := "Bearer " + getUserToken(t, user.Name, auth_model.AccessTokenScopePackage)
+	token := "Bearer " + getUserToken(t, user.Name, auth_model.AccessTokenScopeWritePackage)
 
 	packageName := "test_package"
 	packageVersion := "1.0.1"
 	packageDescription := "Test Description"
 
-	filename := fmt.Sprintf("%s.tar.gz", packageVersion)
+	filename := packageVersion + ".tar.gz"
 
 	pubspecContent := `name: ` + packageName + `
 version: ` + packageVersion + `
@@ -65,8 +65,8 @@ description: ` + packageDescription
 		req := NewRequest(t, "GET", uploadURL)
 		MakeRequest(t, req, http.StatusUnauthorized)
 
-		req = NewRequest(t, "GET", uploadURL)
-		addTokenAuthHeader(req, token)
+		req = NewRequest(t, "GET", uploadURL).
+			AddTokenAuth(token)
 		resp := MakeRequest(t, req, http.StatusOK)
 
 		type UploadRequest struct {
@@ -87,40 +87,40 @@ description: ` + packageDescription
 
 			_ = writer.Close()
 
-			req := NewRequestWithBody(t, "POST", url, body)
-			req.Header.Add("Content-Type", writer.FormDataContentType())
-			addTokenAuthHeader(req, token)
+			req := NewRequestWithBody(t, "POST", url, body).
+				SetHeader("Content-Type", writer.FormDataContentType()).
+				AddTokenAuth(token)
 			return MakeRequest(t, req, expectedStatus)
 		}
 
 		resp = uploadFile(t, result.URL, content, http.StatusNoContent)
 
-		req = NewRequest(t, "GET", resp.Header().Get("Location"))
-		addTokenAuthHeader(req, token)
+		req = NewRequest(t, "GET", resp.Header().Get("Location")).
+			AddTokenAuth(token)
 		MakeRequest(t, req, http.StatusOK)
 
-		pvs, err := packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypePub)
+		pvs, err := packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypePub)
 		assert.NoError(t, err)
 		assert.Len(t, pvs, 1)
 
-		pd, err := packages.GetPackageDescriptor(db.DefaultContext, pvs[0])
+		pd, err := packages.GetPackageDescriptor(t.Context(), pvs[0])
 		assert.NoError(t, err)
 		assert.NotNil(t, pd.SemVer)
 		assert.IsType(t, &pub_module.Metadata{}, pd.Metadata)
 		assert.Equal(t, packageName, pd.Package.Name)
 		assert.Equal(t, packageVersion, pd.Version.Version)
 
-		pfs, err := packages.GetFilesByVersionID(db.DefaultContext, pvs[0].ID)
+		pfs, err := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)
 		assert.NoError(t, err)
 		assert.Len(t, pfs, 1)
 		assert.Equal(t, filename, pfs[0].Name)
 		assert.True(t, pfs[0].IsLead)
 
-		pb, err := packages.GetBlobByID(db.DefaultContext, pfs[0].BlobID)
+		pb, err := packages.GetBlobByID(t.Context(), pfs[0].BlobID)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(len(content)), pb.Size)
 
-		resp = uploadFile(t, result.URL, content, http.StatusBadRequest)
+		_ = uploadFile(t, result.URL, content, http.StatusConflict)
 	})
 
 	t.Run("Download", func(t *testing.T) {
@@ -130,10 +130,10 @@ description: ` + packageDescription
 		resp := MakeRequest(t, req, http.StatusOK)
 
 		type VersionMetadata struct {
-			Version    string      `json:"version"`
-			ArchiveURL string      `json:"archive_url"`
-			Published  time.Time   `json:"published"`
-			Pubspec    interface{} `json:"pubspec,omitempty"`
+			Version    string    `json:"version"`
+			ArchiveURL string    `json:"archive_url"`
+			Published  time.Time `json:"published"`
+			Pubspec    any       `json:"pubspec,omitempty"`
 		}
 
 		var result VersionMetadata
@@ -155,10 +155,10 @@ description: ` + packageDescription
 		resp := MakeRequest(t, req, http.StatusOK)
 
 		type VersionMetadata struct {
-			Version    string      `json:"version"`
-			ArchiveURL string      `json:"archive_url"`
-			Published  time.Time   `json:"published"`
-			Pubspec    interface{} `json:"pubspec,omitempty"`
+			Version    string    `json:"version"`
+			ArchiveURL string    `json:"archive_url"`
+			Published  time.Time `json:"published"`
+			Pubspec    any       `json:"pubspec,omitempty"`
 		}
 
 		type PackageVersions struct {

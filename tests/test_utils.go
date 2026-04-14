@@ -4,71 +4,38 @@
 package tests
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path"
 	"path/filepath"
-	"runtime"
 	"testing"
 
+	"code.gitea.io/gitea/models/db"
+	packages_model "code.gitea.io/gitea/models/packages"
 	"code.gitea.io/gitea/models/unittest"
-	"code.gitea.io/gitea/modules/base"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/graceful"
 	"code.gitea.io/gitea/modules/log"
-	"code.gitea.io/gitea/modules/queue"
-	repo_module "code.gitea.io/gitea/modules/repository"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/storage"
+	"code.gitea.io/gitea/modules/testlogger"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/routers"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func InitTest(requireGitea bool) {
-	giteaRoot := base.SetupGiteaRoot()
-	if giteaRoot == "" {
-		fmt.Println("Environment variable $GITEA_ROOT not set")
-		os.Exit(1)
-	}
-	if requireGitea {
-		giteaBinary := "gitea"
-		if runtime.GOOS == "windows" {
-			giteaBinary += ".exe"
-		}
-		setting.AppPath = path.Join(giteaRoot, giteaBinary)
-		if _, err := os.Stat(setting.AppPath); err != nil {
-			fmt.Printf("Could not find gitea binary at %s\n", setting.AppPath)
-			os.Exit(1)
-		}
-	}
-
-	giteaConf := os.Getenv("GITEA_CONF")
-	if giteaConf == "" {
-		fmt.Println("Environment variable $GITEA_CONF not set")
-		os.Exit(1)
-	} else if !path.IsAbs(giteaConf) {
-		setting.CustomConf = path.Join(giteaRoot, giteaConf)
-	} else {
-		setting.CustomConf = giteaConf
-	}
-
-	setting.SetCustomPathAndConf("", "", "")
-	setting.InitProviderAndLoadCommonSettingsForTest()
+func InitTest() {
+	testlogger.Init()
+	unittest.InitSettingsForTesting()
 	setting.Repository.DefaultBranch = "master" // many test code still assume that default branch is called "master"
-	_ = util.RemoveAll(repo_module.LocalCopyPath())
 
-	if err := git.InitFull(context.Background()); err != nil {
+	if err := git.InitFull(); err != nil {
 		log.Fatal("git.InitOnceWithSync: %v", err)
 	}
 
 	setting.LoadDBSetting()
 	if err := storage.Init(); err != nil {
-		fmt.Printf("Init storage failed: %v", err)
-		os.Exit(1)
+		testlogger.Panicf("Init storage failed: %v\n", err)
 	}
 
 	switch {
@@ -84,7 +51,7 @@ func InitTest(requireGitea bool) {
 		if err != nil {
 			log.Fatal("sql.Open: %v", err)
 		}
-		if _, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", setting.Database.Name)); err != nil {
+		if _, err = db.Exec("CREATE DATABASE IF NOT EXISTS " + setting.Database.Name); err != nil {
 			log.Fatal("db.Exec: %v", err)
 		}
 	case setting.Database.Type.IsPostgreSQL():
@@ -109,7 +76,7 @@ func InitTest(requireGitea bool) {
 		defer dbrows.Close()
 
 		if !dbrows.Next() {
-			if _, err = db.Exec(fmt.Sprintf("CREATE DATABASE %s", setting.Database.Name)); err != nil {
+			if _, err = db.Exec("CREATE DATABASE " + setting.Database.Name); err != nil {
 				log.Fatal("db.Exec: CREATE DATABASE: %v", err)
 			}
 		}
@@ -139,7 +106,7 @@ func InitTest(requireGitea bool) {
 
 		if !schrows.Next() {
 			// Create and setup a DB schema
-			if _, err = db.Exec(fmt.Sprintf("CREATE SCHEMA %s", setting.Database.Schema)); err != nil {
+			if _, err = db.Exec("CREATE SCHEMA " + setting.Database.Schema); err != nil {
 				log.Fatal("db.Exec: CREATE SCHEMA: %v", err)
 			}
 		}
@@ -157,95 +124,87 @@ func InitTest(requireGitea bool) {
 		defer db.Close()
 	}
 
-	routers.GlobalInitInstalled(graceful.GetManager().HammerContext())
+	routers.InitWebInstalled(graceful.GetManager().HammerContext())
+}
+
+func PrepareAttachmentsStorage(t testing.TB) {
+	// prepare attachments directory and files
+	assert.NoError(t, storage.Clean(storage.Attachments))
+
+	s, err := storage.NewStorage(setting.LocalStorageType, &setting.Storage{
+		Path: filepath.Join(filepath.Dir(setting.AppPath), "tests", "testdata", "data", "attachments"),
+	})
+	assert.NoError(t, err)
+	assert.NoError(t, s.IterateObjects("", func(p string, obj storage.Object) error {
+		_, err = storage.Copy(storage.Attachments, p, s, p)
+		return err
+	}))
+}
+
+func PrepareGitRepoDirectory(t testing.TB) {
+	if !assert.NotEmpty(t, setting.RepoRootPath) {
+		return
+	}
+	assert.NoError(t, unittest.SyncDirs(filepath.Join(filepath.Dir(setting.AppPath), "tests/gitea-repositories-meta"), setting.RepoRootPath))
+}
+
+func PrepareArtifactsStorage(t testing.TB) {
+	// prepare actions artifacts directory and files
+	assert.NoError(t, storage.Clean(storage.ActionsArtifacts))
+
+	s, err := storage.NewStorage(setting.LocalStorageType, &setting.Storage{
+		Path: filepath.Join(filepath.Dir(setting.AppPath), "tests", "testdata", "data", "artifacts"),
+	})
+	assert.NoError(t, err)
+	assert.NoError(t, s.IterateObjects("", func(p string, obj storage.Object) error {
+		_, err = storage.Copy(storage.ActionsArtifacts, p, s, p)
+		return err
+	}))
+}
+
+func PrepareLFSStorage(t testing.TB) {
+	// load LFS object fixtures
+	// (LFS storage can be on any of several backends, including remote servers, so init it with the storage API)
+	lfsFixtures, err := storage.NewStorage(setting.LocalStorageType, &setting.Storage{
+		Path: filepath.Join(filepath.Dir(setting.AppPath), "tests/gitea-lfs-meta"),
+	})
+	assert.NoError(t, err)
+	assert.NoError(t, storage.Clean(storage.LFS))
+	assert.NoError(t, lfsFixtures.IterateObjects("", func(path string, _ storage.Object) error {
+		_, err := storage.Copy(storage.LFS, path, lfsFixtures, path)
+		return err
+	}))
+}
+
+func PrepareCleanPackageData(t testing.TB) {
+	// clear all package data
+	assert.NoError(t, db.TruncateBeans(t.Context(),
+		&packages_model.Package{},
+		&packages_model.PackageVersion{},
+		&packages_model.PackageFile{},
+		&packages_model.PackageBlob{},
+		&packages_model.PackageProperty{},
+		&packages_model.PackageBlobUpload{},
+		&packages_model.PackageCleanupRule{},
+	))
+	assert.NoError(t, storage.Clean(storage.Packages))
 }
 
 func PrepareTestEnv(t testing.TB, skip ...int) func() {
 	t.Helper()
-	ourSkip := 2
-	if len(skip) > 0 {
-		ourSkip += skip[0]
-	}
-	deferFn := PrintCurrentTest(t, ourSkip)
+	deferFn := PrintCurrentTest(t, util.OptionalArg(skip)+1)
 
 	// load database fixtures
 	assert.NoError(t, unittest.LoadFixtures())
 
-	// load git repo fixtures
-	assert.NoError(t, util.RemoveAll(setting.RepoRootPath))
-	assert.NoError(t, unittest.CopyDir(path.Join(filepath.Dir(setting.AppPath), "tests/gitea-repositories-meta"), setting.RepoRootPath))
-	ownerDirs, err := os.ReadDir(setting.RepoRootPath)
-	if err != nil {
-		assert.NoError(t, err, "unable to read the new repo root: %v\n", err)
-	}
-	for _, ownerDir := range ownerDirs {
-		if !ownerDir.Type().IsDir() {
-			continue
-		}
-		repoDirs, err := os.ReadDir(filepath.Join(setting.RepoRootPath, ownerDir.Name()))
-		if err != nil {
-			assert.NoError(t, err, "unable to read the new repo root: %v\n", err)
-		}
-		for _, repoDir := range repoDirs {
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "objects", "pack"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "objects", "info"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "refs", "heads"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "refs", "tag"), 0o755)
-		}
-	}
-
-	// load LFS object fixtures
-	// (LFS storage can be on any of several backends, including remote servers, so we init it with the storage API)
-	lfsFixtures, err := storage.NewStorage("", storage.LocalStorageConfig{Path: path.Join(filepath.Dir(setting.AppPath), "tests/gitea-lfs-meta")})
-	assert.NoError(t, err)
-	assert.NoError(t, storage.Clean(storage.LFS))
-	assert.NoError(t, lfsFixtures.IterateObjects(func(path string, _ storage.Object) error {
-		_, err := storage.Copy(storage.LFS, path, lfsFixtures, path)
-		return err
-	}))
-
+	// do not add more Prepare* functions here, only call necessary ones in the related test functions
+	PrepareGitRepoDirectory(t)
+	PrepareLFSStorage(t)
+	PrepareCleanPackageData(t)
 	return deferFn
 }
 
-// resetFixtures flushes queues, reloads fixtures and resets test repositories within a single test.
-// Most tests should call defer tests.PrepareTestEnv(t)() (or have onGiteaRun do that for them) but sometimes
-// within a single test this is required
-func ResetFixtures(t *testing.T) {
-	assert.NoError(t, queue.GetManager().FlushAll(context.Background(), -1))
-
-	// load database fixtures
-	assert.NoError(t, unittest.LoadFixtures())
-
-	// load git repo fixtures
-	assert.NoError(t, util.RemoveAll(setting.RepoRootPath))
-	assert.NoError(t, unittest.CopyDir(path.Join(filepath.Dir(setting.AppPath), "tests/gitea-repositories-meta"), setting.RepoRootPath))
-	ownerDirs, err := os.ReadDir(setting.RepoRootPath)
-	if err != nil {
-		assert.NoError(t, err, "unable to read the new repo root: %v\n", err)
-	}
-	for _, ownerDir := range ownerDirs {
-		if !ownerDir.Type().IsDir() {
-			continue
-		}
-		repoDirs, err := os.ReadDir(filepath.Join(setting.RepoRootPath, ownerDir.Name()))
-		if err != nil {
-			assert.NoError(t, err, "unable to read the new repo root: %v\n", err)
-		}
-		for _, repoDir := range repoDirs {
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "objects", "pack"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "objects", "info"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "refs", "heads"), 0o755)
-			_ = os.MkdirAll(filepath.Join(setting.RepoRootPath, ownerDir.Name(), repoDir.Name(), "refs", "tag"), 0o755)
-		}
-	}
-
-	// load LFS object fixtures
-	// (LFS storage can be on any of several backends, including remote servers, so we init it with the storage API)
-	lfsFixtures, err := storage.NewStorage("", storage.LocalStorageConfig{Path: path.Join(filepath.Dir(setting.AppPath), "tests/gitea-lfs-meta")})
-	assert.NoError(t, err)
-	assert.NoError(t, storage.Clean(storage.LFS))
-	assert.NoError(t, lfsFixtures.IterateObjects(func(path string, _ storage.Object) error {
-		_, err := storage.Copy(storage.LFS, path, lfsFixtures, path)
-		return err
-	}))
+func PrintCurrentTest(t testing.TB, skip ...int) func() {
+	t.Helper()
+	return testlogger.PrintCurrentTest(t, util.OptionalArg(skip)+1)
 }

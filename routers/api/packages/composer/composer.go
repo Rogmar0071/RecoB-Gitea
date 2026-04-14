@@ -5,40 +5,36 @@ package composer
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"code.gitea.io/gitea/models/db"
 	packages_model "code.gitea.io/gitea/models/packages"
-	"code.gitea.io/gitea/modules/context"
+	"code.gitea.io/gitea/modules/optional"
 	packages_module "code.gitea.io/gitea/modules/packages"
 	composer_module "code.gitea.io/gitea/modules/packages/composer"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/routers/api/packages/helper"
+	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/convert"
 	packages_service "code.gitea.io/gitea/services/packages"
-
-	"github.com/hashicorp/go-version"
 )
 
-func apiError(ctx *context.Context, status int, obj interface{}) {
-	helper.LogAndProcessError(ctx, status, obj, func(message string) {
-		type Error struct {
-			Status  int    `json:"status"`
-			Message string `json:"message"`
-		}
-		ctx.JSON(status, struct {
-			Errors []Error `json:"errors"`
-		}{
-			Errors: []Error{
-				{Status: status, Message: message},
-			},
-		})
+func apiError(ctx *context.Context, status int, obj any) {
+	message := helper.ProcessErrorForUser(ctx, status, obj)
+	type Error struct {
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+	}
+	ctx.JSON(status, struct {
+		Errors []Error `json:"errors"`
+	}{
+		Errors: []Error{
+			{Status: status, Message: message},
+		},
 	})
 }
 
@@ -52,10 +48,7 @@ func ServiceIndex(ctx *context.Context) {
 // SearchPackages searches packages, only "q" is supported
 // https://packagist.org/apidoc#search-packages
 func SearchPackages(ctx *context.Context) {
-	page := ctx.FormInt("page")
-	if page < 1 {
-		page = 1
-	}
+	page := max(ctx.FormInt("page"), 1)
 	perPage := ctx.FormInt("per_page")
 	paginator := db.ListOptions{
 		Page:     page,
@@ -66,7 +59,7 @@ func SearchPackages(ctx *context.Context) {
 		OwnerID:    ctx.Package.Owner.ID,
 		Type:       packages_model.TypeComposer,
 		Name:       packages_model.SearchValue{Value: ctx.FormTrim("q")},
-		IsInternal: util.OptionalBoolFalse,
+		IsInternal: optional.Some(false),
 		Paginator:  &paginator,
 	}
 	if ctx.FormTrim("type") != "" {
@@ -114,7 +107,7 @@ func SearchPackages(ctx *context.Context) {
 // EnumeratePackages lists all package names
 // https://packagist.org/apidoc#list-packages
 func EnumeratePackages(ctx *context.Context) {
-	ps, err := packages_model.GetPackagesByType(db.DefaultContext, ctx.Package.Owner.ID, packages_model.TypeComposer)
+	ps, err := packages_model.GetPackagesByType(ctx, ctx.Package.Owner.ID, packages_model.TypeComposer)
 	if err != nil {
 		apiError(ctx, http.StatusInternalServerError, err)
 		return
@@ -133,8 +126,8 @@ func EnumeratePackages(ctx *context.Context) {
 // PackageMetadata returns the metadata for a single package
 // https://packagist.org/apidoc#get-package-data
 func PackageMetadata(ctx *context.Context) {
-	vendorName := ctx.Params("vendorname")
-	projectName := ctx.Params("projectname")
+	vendorName := ctx.PathParam("vendorname")
+	projectName := ctx.PathParam("projectname")
 
 	pvs, err := packages_model.GetVersionsByPackageName(ctx, ctx.Package.Owner.ID, packages_model.TypeComposer, vendorName+"/"+projectName)
 	if err != nil {
@@ -162,44 +155,41 @@ func PackageMetadata(ctx *context.Context) {
 
 // DownloadPackageFile serves the content of a package
 func DownloadPackageFile(ctx *context.Context) {
-	s, pf, err := packages_service.GetFileStreamByPackageNameAndVersion(
+	s, u, pf, err := packages_service.OpenFileForDownloadByPackageNameAndVersion(
 		ctx,
 		&packages_service.PackageInfo{
 			Owner:       ctx.Package.Owner,
 			PackageType: packages_model.TypeComposer,
-			Name:        ctx.Params("package"),
-			Version:     ctx.Params("version"),
+			Name:        ctx.PathParam("package"),
+			Version:     ctx.PathParam("version"),
 		},
 		&packages_service.PackageFileInfo{
-			Filename: ctx.Params("filename"),
+			Filename: ctx.PathParam("filename"),
 		},
+		ctx.Req.Method,
 	)
 	if err != nil {
-		if err == packages_model.ErrPackageNotExist || err == packages_model.ErrPackageFileNotExist {
+		if errors.Is(err, packages_model.ErrPackageNotExist) || errors.Is(err, packages_model.ErrPackageFileNotExist) {
 			apiError(ctx, http.StatusNotFound, err)
 			return
 		}
 		apiError(ctx, http.StatusInternalServerError, err)
 		return
 	}
-	defer s.Close()
 
-	ctx.ServeContent(s, &context.ServeHeaderOptions{
-		Filename:     pf.Name,
-		LastModified: pf.CreatedUnix.AsLocalTime(),
-	})
+	helper.ServePackageFile(ctx, s, u, pf)
 }
 
 // UploadPackage creates a new package
 func UploadPackage(ctx *context.Context) {
-	buf, err := packages_module.CreateHashedBufferFromReader(ctx.Req.Body, 32*1024*1024)
+	buf, err := packages_module.CreateHashedBufferFromReader(ctx.Req.Body)
 	if err != nil {
 		apiError(ctx, http.StatusInternalServerError, err)
 		return
 	}
 	defer buf.Close()
 
-	cp, err := composer_module.ParsePackage(buf, buf.Size())
+	cp, err := composer_module.ParsePackage(buf, ctx.FormTrim("version"))
 	if err != nil {
 		if errors.Is(err, util.ErrInvalidArgument) {
 			apiError(ctx, http.StatusBadRequest, err)
@@ -215,15 +205,13 @@ func UploadPackage(ctx *context.Context) {
 	}
 
 	if cp.Version == "" {
-		v, err := version.NewVersion(ctx.FormTrim("version"))
-		if err != nil {
-			apiError(ctx, http.StatusBadRequest, composer_module.ErrInvalidVersion)
-			return
-		}
-		cp.Version = v.String()
+		// the version should be either set in the "composer.json", or as a query parameter "?version=xxx"
+		apiError(ctx, http.StatusBadRequest, composer_module.ErrInvalidVersion)
+		return
 	}
 
 	_, _, err = packages_service.CreatePackageAndAddFile(
+		ctx,
 		&packages_service.PackageCreationInfo{
 			PackageInfo: packages_service.PackageInfo{
 				Owner:       ctx.Package.Owner,
@@ -240,7 +228,7 @@ func UploadPackage(ctx *context.Context) {
 		},
 		&packages_service.PackageFileCreationInfo{
 			PackageFileInfo: packages_service.PackageFileInfo{
-				Filename: strings.ToLower(fmt.Sprintf("%s.%s.zip", strings.ReplaceAll(cp.Name, "/", "-"), cp.Version)),
+				Filename: cp.Filename,
 			},
 			Creator: ctx.Doer,
 			Data:    buf,
@@ -250,7 +238,7 @@ func UploadPackage(ctx *context.Context) {
 	if err != nil {
 		switch err {
 		case packages_model.ErrDuplicatePackageVersion:
-			apiError(ctx, http.StatusBadRequest, err)
+			apiError(ctx, http.StatusConflict, err)
 		case packages_service.ErrQuotaTotalCount, packages_service.ErrQuotaTypeSize, packages_service.ErrQuotaTotalSize:
 			apiError(ctx, http.StatusForbidden, err)
 		default:

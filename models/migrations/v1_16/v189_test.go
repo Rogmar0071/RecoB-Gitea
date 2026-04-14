@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"testing"
@@ -62,8 +62,8 @@ func Test_UnwrapLDAPSourceCfg(t *testing.T) {
 		}
 
 		for _, source := range sources {
-			converted := map[string]interface{}{}
-			expected := map[string]interface{}{}
+			converted := map[string]any{}
+			expected := map[string]any{}
 
 			if err := json.Unmarshal([]byte(source.Cfg), &converted); err != nil {
 				assert.NoError(t, err)
@@ -75,8 +75,8 @@ func Test_UnwrapLDAPSourceCfg(t *testing.T) {
 				return
 			}
 
-			assert.EqualValues(t, expected, converted, "UnwrapLDAPSourceCfg failed for %d", source.ID)
-			assert.EqualValues(t, source.ID%2 == 0, source.IsActive, "UnwrapLDAPSourceCfg failed for %d", source.ID)
+			assert.Equal(t, expected, converted, "UnwrapLDAPSourceCfg failed for %d", source.ID)
+			assert.Equal(t, source.ID%2 == 0, source.IsActive, "UnwrapLDAPSourceCfg failed for %d", source.ID)
 		}
 	}
 }

@@ -22,8 +22,8 @@ type VirtualSessionProvider struct {
 	provider session.Provider
 }
 
-// Init initializes the cookie session provider with given root path.
-func (o *VirtualSessionProvider) Init(gclifetime int64, config string) error {
+// Init initializes the cookie session provider with the given config.
+func (o *VirtualSessionProvider) Init(gcLifetime int64, config string) error {
 	var opts session.Options
 	if err := json.Unmarshal([]byte(config), &opts); err != nil {
 		return err
@@ -52,24 +52,25 @@ func (o *VirtualSessionProvider) Init(gclifetime int64, config string) error {
 	default:
 		return fmt.Errorf("VirtualSessionProvider: Unknown Provider: %s", opts.Provider)
 	}
-	return o.provider.Init(gclifetime, opts.ProviderConfig)
+	return o.provider.Init(gcLifetime, opts.ProviderConfig)
 }
 
 // Read returns raw session store by session ID.
 func (o *VirtualSessionProvider) Read(sid string) (session.RawStore, error) {
 	o.lock.RLock()
 	defer o.lock.RUnlock()
-	if o.provider.Exist(sid) {
+	if exist, err := o.provider.Exist(sid); err == nil && exist {
 		return o.provider.Read(sid)
+	} else if err != nil {
+		return nil, fmt.Errorf("check if '%s' exist failed: %w", sid, err)
 	}
-	kv := make(map[interface{}]interface{})
-	kv["_old_uid"] = "0"
+	kv := make(map[any]any)
 	return NewVirtualStore(o, sid, kv), nil
 }
 
 // Exist returns true if session with given ID exists.
-func (o *VirtualSessionProvider) Exist(sid string) bool {
-	return true
+func (o *VirtualSessionProvider) Exist(sid string) (bool, error) {
+	return true, nil
 }
 
 // Destroy deletes a session by session ID.
@@ -87,7 +88,7 @@ func (o *VirtualSessionProvider) Regenerate(oldsid, sid string) (session.RawStor
 }
 
 // Count counts and returns number of sessions.
-func (o *VirtualSessionProvider) Count() int {
+func (o *VirtualSessionProvider) Count() (int, error) {
 	o.lock.RLock()
 	defer o.lock.RUnlock()
 	return o.provider.Count()
@@ -107,12 +108,12 @@ type VirtualStore struct {
 	p        *VirtualSessionProvider
 	sid      string
 	lock     sync.RWMutex
-	data     map[interface{}]interface{}
+	data     map[any]any
 	released bool
 }
 
 // NewVirtualStore creates and returns a virtual session store.
-func NewVirtualStore(p *VirtualSessionProvider, sid string, kv map[interface{}]interface{}) *VirtualStore {
+func NewVirtualStore(p *VirtualSessionProvider, sid string, kv map[any]any) *VirtualStore {
 	return &VirtualStore{
 		p:    p,
 		sid:  sid,
@@ -121,7 +122,7 @@ func NewVirtualStore(p *VirtualSessionProvider, sid string, kv map[interface{}]i
 }
 
 // Set sets value to given key in session.
-func (s *VirtualStore) Set(key, val interface{}) error {
+func (s *VirtualStore) Set(key, val any) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -130,7 +131,7 @@ func (s *VirtualStore) Set(key, val interface{}) error {
 }
 
 // Get gets value by given key in session.
-func (s *VirtualStore) Get(key interface{}) interface{} {
+func (s *VirtualStore) Get(key any) any {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
@@ -138,7 +139,7 @@ func (s *VirtualStore) Get(key interface{}) interface{} {
 }
 
 // Delete delete a key from session.
-func (s *VirtualStore) Delete(key interface{}) error {
+func (s *VirtualStore) Delete(key any) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -158,13 +159,17 @@ func (s *VirtualStore) Release() error {
 	// Now need to lock the provider
 	s.p.lock.Lock()
 	defer s.p.lock.Unlock()
-	if oldUID, ok := s.data["_old_uid"]; (ok && (oldUID != "0" || len(s.data) > 1)) || (!ok && len(s.data) > 0) {
+	if len(s.data) > 0 {
 		// Now ensure that we don't exist!
 		realProvider := s.p.provider
 
-		if !s.released && realProvider.Exist(s.sid) {
-			// This is an error!
-			return fmt.Errorf("new sid '%s' already exists", s.sid)
+		if !s.released {
+			if exist, err := realProvider.Exist(s.sid); err == nil && exist {
+				// This is an error!
+				return fmt.Errorf("new sid '%s' already exists", s.sid)
+			} else if err != nil {
+				return fmt.Errorf("check if '%s' exist failed: %w", s.sid, err)
+			}
 		}
 		realStore, err := realProvider.Read(s.sid)
 		if err != nil {
@@ -192,6 +197,6 @@ func (s *VirtualStore) Flush() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	s.data = make(map[interface{}]interface{})
+	s.data = make(map[any]any)
 	return nil
 }

@@ -70,6 +70,20 @@ type swaggerResponseAnnotatedTag struct {
 	Body api.AnnotatedTag `json:"body"`
 }
 
+// TagProtectionList
+// swagger:response TagProtectionList
+type swaggerResponseTagProtectionList struct {
+	// in:body
+	Body []api.TagProtection `json:"body"`
+}
+
+// TagProtection
+// swagger:response TagProtection
+type swaggerResponseTagProtection struct {
+	// in:body
+	Body api.TagProtection `json:"body"`
+}
+
 // Reference
 // swagger:response Reference
 type swaggerResponseReference struct {
@@ -296,6 +310,13 @@ type swaggerFileResponse struct {
 	Body api.FileResponse `json:"body"`
 }
 
+// FilesResponse
+// swagger:response FilesResponse
+type swaggerFilesResponse struct {
+	// in: body
+	Body api.FilesResponse `json:"body"`
+}
+
 // ContentsResponse
 // swagger:response ContentsResponse
 type swaggerContentsResponse struct {
@@ -308,6 +329,12 @@ type swaggerContentsResponse struct {
 type swaggerContentsListResponse struct {
 	// in:body
 	Body []api.ContentsResponse `json:"body"`
+}
+
+// swagger:response ContentsExtResponse
+type swaggerContentsExtResponse struct {
+	// in:body
+	Body api.ContentsExtResponse `json:"body"`
 }
 
 // FileDeleteResponse
@@ -336,6 +363,13 @@ type swaggerTopicNames struct {
 type swaggerLanguageStatistics struct {
 	// in: body
 	Body map[string]int64 `json:"body"`
+}
+
+// LicensesList
+// swagger:response LicensesList
+type swaggerLicensesList struct {
+	// in: body
+	Body []string `json:"body"`
 }
 
 // CombinedStatus
@@ -385,4 +419,106 @@ type swaggerPushMirrorList struct {
 type swaggerRepoCollaboratorPermission struct {
 	// in:body
 	Body api.RepoCollaboratorPermission `json:"body"`
+}
+
+// RepoIssueConfig
+// swagger:response RepoIssueConfig
+type swaggerRepoIssueConfig struct {
+	// in:body
+	Body api.IssueConfig `json:"body"`
+}
+
+// RepoIssueConfigValidation
+// swagger:response RepoIssueConfigValidation
+type swaggerRepoIssueConfigValidation struct {
+	// in:body
+	Body api.IssueConfigValidation `json:"body"`
+}
+
+// RepoNewIssuePinsAllowed
+// swagger:response RepoNewIssuePinsAllowed
+type swaggerRepoNewIssuePinsAllowed struct {
+	// in:body
+	Body api.NewIssuePinsAllowed `json:"body"`
+}
+
+// TasksList
+// swagger:response TasksList
+type swaggerRepoTasksList struct {
+	// in:body
+	Body api.ActionTaskResponse `json:"body"`
+}
+
+// WorkflowRunsList
+// swagger:response WorkflowRunsList
+type swaggerActionWorkflowRunsResponse struct {
+	// in:body
+	Body api.ActionWorkflowRunsResponse `json:"body"`
+}
+
+// WorkflowRun
+// swagger:response WorkflowRun
+type swaggerWorkflowRun struct {
+	// in:body
+	Body api.ActionWorkflowRun `json:"body"`
+}
+
+// WorkflowJobsList
+// swagger:response WorkflowJobsList
+type swaggerActionWorkflowJobsResponse struct {
+	// in:body
+	Body api.ActionWorkflowJobsResponse `json:"body"`
+}
+
+// WorkflowJob
+// swagger:response WorkflowJob
+type swaggerWorkflowJob struct {
+	// in:body
+	Body api.ActionWorkflowJob `json:"body"`
+}
+
+// ArtifactsList
+// swagger:response ArtifactsList
+type swaggerRepoArtifactsList struct {
+	// in:body
+	Body api.ActionArtifactsResponse `json:"body"`
+}
+
+// Artifact
+// swagger:response Artifact
+type swaggerRepoArtifact struct {
+	// in:body
+	Body api.ActionArtifact `json:"body"`
+}
+
+// RunnerList
+// swagger:response RunnerList
+type swaggerRunnerList struct {
+	// in:body
+	Body api.ActionRunnersResponse `json:"body"`
+}
+
+// Runner
+// swagger:response Runner
+type swaggerRunner struct {
+	// in:body
+	Body api.ActionRunner `json:"body"`
+}
+
+// swagger:response Compare
+type swaggerCompare struct {
+	// in:body
+	Body api.Compare `json:"body"`
+}
+
+// swagger:response MergeUpstreamRequest
+type swaggerMergeUpstreamRequest struct {
+	// in:body
+	Body api.MergeUpstreamRequest `json:"body"`
+}
+
+// swagger:response MergeUpstreamResponse
+type swaggerMergeUpstreamResponse struct {
+	// in:body
+	Body api.MergeUpstreamResponse `json:"body"`
 }

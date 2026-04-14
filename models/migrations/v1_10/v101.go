@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_10 //nolint
+package v1_10
 
 import (
 	"xorm.io/xorm"
@@ -14,5 +14,5 @@ func ChangeSomeColumnsLengthOfExternalLoginUser(x *xorm.Engine) error {
 		RefreshToken      string `xorm:"TEXT"`
 	}
 
-	return x.Sync2(new(ExternalLoginUser))
+	return x.Sync(new(ExternalLoginUser))
 }

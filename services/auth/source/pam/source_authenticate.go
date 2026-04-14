@@ -4,22 +4,22 @@
 package pam
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"code.gitea.io/gitea/models/auth"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/auth/pam"
+	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/util"
-	"code.gitea.io/gitea/services/mailer"
 
 	"github.com/google/uuid"
 )
 
 // Authenticate queries if login/password is valid against the PAM,
 // and create a local user if success when enabled.
-func (source *Source) Authenticate(user *user_model.User, userName, password string) (*user_model.User, error) {
+func (source *Source) Authenticate(ctx context.Context, user *user_model.User, userName, password string) (*user_model.User, error) {
 	pamLogin, err := pam.Auth(source.ServiceName, userName, password)
 	if err != nil {
 		if strings.Contains(err.Error(), "Authentication failure") {
@@ -35,9 +35,9 @@ func (source *Source) Authenticate(user *user_model.User, userName, password str
 	// Allow PAM sources with `@` in their name, like from Active Directory
 	username := pamLogin
 	email := pamLogin
-	idx := strings.Index(pamLogin, "@")
-	if idx > -1 {
-		username = pamLogin[:idx]
+	before, _, ok := strings.Cut(pamLogin, "@")
+	if ok {
+		username = before
 	}
 	if user_model.ValidateEmail(email) != nil {
 		if source.EmailDomain != "" {
@@ -56,23 +56,16 @@ func (source *Source) Authenticate(user *user_model.User, userName, password str
 		Email:       email,
 		Passwd:      password,
 		LoginType:   auth.PAM,
-		LoginSource: source.authSource.ID,
+		LoginSource: source.AuthSource.ID,
 		LoginName:   userName, // This is what the user typed in
 	}
 	overwriteDefault := &user_model.CreateUserOverwriteOptions{
-		IsActive: util.OptionalBoolTrue,
+		IsActive: optional.Some(true),
 	}
 
-	if err := user_model.CreateUser(user, overwriteDefault); err != nil {
+	if err := user_model.CreateUser(ctx, user, &user_model.Meta{}, overwriteDefault); err != nil {
 		return user, err
 	}
 
-	mailer.SendRegisterNotifyMail(user)
-
 	return user, nil
-}
-
-// IsSkipLocalTwoFA returns if this source should skip local 2fa for password authentication
-func (source *Source) IsSkipLocalTwoFA() bool {
-	return source.SkipLocalTwoFA
 }

@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"xorm.io/xorm"
@@ -15,5 +15,5 @@ func AddRenamedBranchTable(x *xorm.Engine) error {
 		To          string
 		CreatedUnix int64 `xorm:"created"`
 	}
-	return x.Sync2(new(RenamedBranch))
+	return x.Sync(new(RenamedBranch))
 }

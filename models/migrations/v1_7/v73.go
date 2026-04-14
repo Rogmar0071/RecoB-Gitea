@@ -1,7 +1,7 @@
 // Copyright 2018 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_7 //nolint
+package v1_7
 
 import (
 	"xorm.io/xorm"
@@ -14,5 +14,5 @@ func AddMustChangePassword(x *xorm.Engine) error {
 		MustChangePassword bool  `xorm:"NOT NULL DEFAULT false"`
 	}
 
-	return x.Sync2(new(User))
+	return x.Sync(new(User))
 }

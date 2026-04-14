@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_9 //nolint
+package v1_9
 
 import (
 	"xorm.io/xorm"
@@ -12,5 +12,5 @@ func AddHTTPMethodToWebhook(x *xorm.Engine) error {
 		HTTPMethod string `xorm:"http_method DEFAULT 'POST'"`
 	}
 
-	return x.Sync2(new(Webhook))
+	return x.Sync(new(Webhook))
 }

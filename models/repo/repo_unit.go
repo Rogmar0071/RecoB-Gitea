@@ -5,9 +5,9 @@ package repo
 
 import (
 	"context"
-	"fmt"
 
 	"code.gitea.io/gitea/models/db"
+	"code.gitea.io/gitea/models/perm"
 	"code.gitea.io/gitea/models/unit"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/setting"
@@ -30,7 +30,7 @@ func IsErrUnitTypeNotExist(err error) bool {
 }
 
 func (err ErrUnitTypeNotExist) Error() string {
-	return fmt.Sprintf("Unit type does not exist: %s", err.UT.String())
+	return "Unit type does not exist: " + err.UT.LogString()
 }
 
 func (err ErrUnitTypeNotExist) Unwrap() error {
@@ -39,11 +39,13 @@ func (err ErrUnitTypeNotExist) Unwrap() error {
 
 // RepoUnit describes all units of a repository
 type RepoUnit struct { //revive:disable-line:exported
-	ID          int64
-	RepoID      int64              `xorm:"INDEX(s)"`
-	Type        unit.Type          `xorm:"INDEX(s)"`
-	Config      convert.Conversion `xorm:"TEXT"`
-	CreatedUnix timeutil.TimeStamp `xorm:"INDEX CREATED"`
+	ID                  int64
+	RepoID              int64              `xorm:"INDEX(s)"`
+	Type                unit.Type          `xorm:"INDEX(s)"`
+	Config              convert.Conversion `xorm:"TEXT"`
+	CreatedUnix         timeutil.TimeStamp `xorm:"INDEX CREATED"`
+	AnonymousAccessMode perm.AccessMode    `xorm:"NOT NULL DEFAULT 0"`
+	EveryoneAccessMode  perm.AccessMode    `xorm:"NOT NULL DEFAULT 0"`
 }
 
 func init() {
@@ -120,18 +122,36 @@ type PullRequestsConfig struct {
 	AllowRebase                   bool
 	AllowRebaseMerge              bool
 	AllowSquash                   bool
+	AllowFastForwardOnly          bool
 	AllowManualMerge              bool
 	AutodetectManualMerge         bool
 	AllowRebaseUpdate             bool
 	DefaultDeleteBranchAfterMerge bool
 	DefaultMergeStyle             MergeStyle
 	DefaultAllowMaintainerEdit    bool
+	DefaultTargetBranch           string
+}
+
+func DefaultPullRequestsConfig() *PullRequestsConfig {
+	cfg := &PullRequestsConfig{
+		AllowMerge:                 true,
+		AllowRebase:                true,
+		AllowRebaseMerge:           true,
+		AllowSquash:                true,
+		AllowFastForwardOnly:       true,
+		AllowRebaseUpdate:          true,
+		DefaultAllowMaintainerEdit: true,
+	}
+	cfg.DefaultDeleteBranchAfterMerge = setting.Repository.PullRequest.DefaultDeleteBranchAfterMerge
+	cfg.DefaultMergeStyle = MergeStyle(setting.Repository.PullRequest.DefaultMergeStyle)
+	cfg.DefaultMergeStyle = util.IfZero(cfg.DefaultMergeStyle, MergeStyleMerge)
+	return cfg
 }
 
 // FromDB fills up a PullRequestsConfig from serialized format.
 func (cfg *PullRequestsConfig) FromDB(bs []byte) error {
-	// AllowRebaseUpdate = true as default for existing PullRequestConfig in DB
-	cfg.AllowRebaseUpdate = true
+	// set default values for existing PullRequestConfig in DB
+	*cfg = *DefaultPullRequestsConfig()
 	return json.UnmarshalHandleDoubleEncode(bs, &cfg)
 }
 
@@ -146,27 +166,73 @@ func (cfg *PullRequestsConfig) IsMergeStyleAllowed(mergeStyle MergeStyle) bool {
 		mergeStyle == MergeStyleRebase && cfg.AllowRebase ||
 		mergeStyle == MergeStyleRebaseMerge && cfg.AllowRebaseMerge ||
 		mergeStyle == MergeStyleSquash && cfg.AllowSquash ||
+		mergeStyle == MergeStyleFastForwardOnly && cfg.AllowFastForwardOnly ||
 		mergeStyle == MergeStyleManuallyMerged && cfg.AllowManualMerge
 }
 
-// GetDefaultMergeStyle returns the default merge style for this pull request
-func (cfg *PullRequestsConfig) GetDefaultMergeStyle() MergeStyle {
-	if len(cfg.DefaultMergeStyle) != 0 {
-		return cfg.DefaultMergeStyle
+func DefaultPullRequestsUnit(repoID int64) RepoUnit {
+	return RepoUnit{RepoID: repoID, Type: unit.TypePullRequests, Config: DefaultPullRequestsConfig()}
+}
+
+// ProjectsMode represents the projects enabled for a repository
+type ProjectsMode string
+
+const (
+	// ProjectsModeRepo allows only repo-level projects
+	ProjectsModeRepo ProjectsMode = "repo"
+	// ProjectsModeOwner allows only owner-level projects
+	ProjectsModeOwner ProjectsMode = "owner"
+	// ProjectsModeAll allows both kinds of projects
+	ProjectsModeAll ProjectsMode = "all"
+	// ProjectsModeNone doesn't allow projects
+	ProjectsModeNone ProjectsMode = "none"
+)
+
+// ProjectsConfig describes projects config
+type ProjectsConfig struct {
+	ProjectsMode ProjectsMode
+}
+
+// FromDB fills up a ProjectsConfig from serialized format.
+func (cfg *ProjectsConfig) FromDB(bs []byte) error {
+	// TODO: remove GetProjectsMode, only use ProjectsMode
+	cfg.ProjectsMode = ProjectsModeAll
+	return json.UnmarshalHandleDoubleEncode(bs, &cfg)
+}
+
+// ToDB exports a ProjectsConfig to a serialized format.
+func (cfg *ProjectsConfig) ToDB() ([]byte, error) {
+	return json.Marshal(cfg)
+}
+
+func (cfg *ProjectsConfig) GetProjectsMode() ProjectsMode {
+	if cfg.ProjectsMode != "" {
+		return cfg.ProjectsMode
 	}
 
-	if setting.Repository.PullRequest.DefaultMergeStyle != "" {
-		return MergeStyle(setting.Repository.PullRequest.DefaultMergeStyle)
+	return ProjectsModeAll
+}
+
+func (cfg *ProjectsConfig) IsProjectsAllowed(m ProjectsMode) bool {
+	projectsMode := cfg.GetProjectsMode()
+
+	if m == ProjectsModeNone {
+		return true
 	}
 
-	return MergeStyleMerge
+	return projectsMode == m || projectsMode == ProjectsModeAll
 }
 
 // BeforeSet is invoked from XORM before setting the value of a field of this object.
 func (r *RepoUnit) BeforeSet(colName string, val xorm.Cell) {
 	switch colName {
 	case "type":
-		switch unit.Type(db.Cell2Int64(val)) {
+		var err error
+		r.Type, _, err = db.CellToInt(val, unit.TypeInvalid)
+		if err != nil {
+			setting.PanicInDevOrTesting("Unable to convert repo unit (id=%d) type: %v", r.ID, err)
+		}
+		switch r.Type {
 		case unit.TypeExternalWiki:
 			r.Config = new(ExternalWikiConfig)
 		case unit.TypeExternalTracker:
@@ -175,10 +241,19 @@ func (r *RepoUnit) BeforeSet(colName string, val xorm.Cell) {
 			r.Config = new(PullRequestsConfig)
 		case unit.TypeIssues:
 			r.Config = new(IssuesConfig)
-		case unit.TypeCode, unit.TypeReleases, unit.TypeWiki, unit.TypeProjects, unit.TypePackages, unit.TypeActions:
+		case unit.TypeActions:
+			r.Config = new(ActionsConfig)
+		case unit.TypeProjects:
+			r.Config = new(ProjectsConfig)
+		case unit.TypeCode, unit.TypeReleases, unit.TypeWiki, unit.TypePackages:
 			fallthrough
 		default:
 			r.Config = new(UnitConfig)
+		}
+	case "config":
+		if *val == nil {
+			// XROM doesn't call FromDB if the value is nil, but we need to set default values for the config fields
+			_ = r.Config.FromDB(nil)
 		}
 	}
 }
@@ -218,6 +293,16 @@ func (r *RepoUnit) ExternalTrackerConfig() *ExternalTrackerConfig {
 	return r.Config.(*ExternalTrackerConfig)
 }
 
+// ActionsConfig returns config for unit.ActionsConfig
+func (r *RepoUnit) ActionsConfig() *ActionsConfig {
+	return r.Config.(*ActionsConfig)
+}
+
+// ProjectsConfig returns config for unit.ProjectsConfig
+func (r *RepoUnit) ProjectsConfig() *ProjectsConfig {
+	return r.Config.(*ProjectsConfig)
+}
+
 func getUnitsByRepoID(ctx context.Context, repoID int64) (units []*RepoUnit, err error) {
 	var tmpUnits []*RepoUnit
 	if err := db.GetEngine(ctx).Where("repo_id = ?", repoID).Find(&tmpUnits); err != nil {
@@ -233,34 +318,14 @@ func getUnitsByRepoID(ctx context.Context, repoID int64) (units []*RepoUnit, err
 	return units, nil
 }
 
-// UpdateRepoUnit updates the provided repo unit
-func UpdateRepoUnit(unit *RepoUnit) error {
-	_, err := db.GetEngine(db.DefaultContext).ID(unit.ID).Update(unit)
+// UpdateRepoUnitConfig updates the config of the provided repo unit
+func UpdateRepoUnitConfig(ctx context.Context, unit *RepoUnit) error {
+	_, err := db.GetEngine(ctx).ID(unit.ID).Cols("config").Update(unit)
 	return err
 }
 
-// UpdateRepositoryUnits updates a repository's units
-func UpdateRepositoryUnits(repo *Repository, units []RepoUnit, deleteUnitTypes []unit.Type) (err error) {
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
-		return err
-	}
-	defer committer.Close()
-
-	// Delete existing settings of units before adding again
-	for _, u := range units {
-		deleteUnitTypes = append(deleteUnitTypes, u.Type)
-	}
-
-	if _, err = db.GetEngine(ctx).Where("repo_id = ?", repo.ID).In("type", deleteUnitTypes).Delete(new(RepoUnit)); err != nil {
-		return err
-	}
-
-	if len(units) > 0 {
-		if err = db.Insert(ctx, units); err != nil {
-			return err
-		}
-	}
-
-	return committer.Commit()
+func UpdateRepoUnitPublicAccess(ctx context.Context, unit *RepoUnit) error {
+	_, err := db.GetEngine(ctx).Where("repo_id=? AND `type`=?", unit.RepoID, unit.Type).
+		Cols("anonymous_access_mode", "everyone_access_mode").Update(unit)
+	return err
 }

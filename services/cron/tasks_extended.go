@@ -8,13 +8,13 @@ import (
 	"time"
 
 	activities_model "code.gitea.io/gitea/models/activities"
-	asymkey_model "code.gitea.io/gitea/models/asymkey"
-	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/models/system"
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/modules/git/gitcmd"
+	issue_indexer "code.gitea.io/gitea/modules/indexer/issues"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/updatechecker"
+	asymkey_service "code.gitea.io/gitea/services/asymkey"
 	repo_service "code.gitea.io/gitea/services/repository"
 	archiver_service "code.gitea.io/gitea/services/repository/archiver"
 	user_service "code.gitea.io/gitea/services/user"
@@ -61,7 +61,7 @@ func registerGarbageCollectRepositories() {
 	}, func(ctx context.Context, _ *user_model.User, config Config) error {
 		rhcConfig := config.(*RepoHealthCheckConfig)
 		// the git args are set by config, they can be safe to be trusted
-		return repo_service.GitGcRepos(ctx, rhcConfig.Timeout, git.ToTrustedCmdArgs(rhcConfig.Args))
+		return repo_service.GitGcRepos(ctx, rhcConfig.Timeout, gitcmd.ToTrustedCmdArgs(rhcConfig.Args))
 	})
 }
 
@@ -70,8 +70,8 @@ func registerRewriteAllPublicKeys() {
 		Enabled:    false,
 		RunAtStart: false,
 		Schedule:   "@every 72h",
-	}, func(_ context.Context, _ *user_model.User, _ Config) error {
-		return asymkey_model.RewriteAllPublicKeys()
+	}, func(ctx context.Context, _ *user_model.User, _ Config) error {
+		return asymkey_service.RewriteAllPublicKeys(ctx)
 	})
 }
 
@@ -80,8 +80,8 @@ func registerRewriteAllPrincipalKeys() {
 		Enabled:    false,
 		RunAtStart: false,
 		Schedule:   "@every 72h",
-	}, func(_ context.Context, _ *user_model.User, _ Config) error {
-		return asymkey_model.RewriteAllPrincipalKeys(db.DefaultContext)
+	}, func(ctx context.Context, _ *user_model.User, _ Config) error {
+		return asymkey_service.RewriteAllPrincipalKeys(ctx)
 	})
 }
 
@@ -135,7 +135,7 @@ func registerDeleteOldActions() {
 		OlderThan: 365 * 24 * time.Hour,
 	}, func(ctx context.Context, _ *user_model.User, config Config) error {
 		olderThanConfig := config.(*OlderThanConfig)
-		return activities_model.DeleteOldActions(olderThanConfig.OlderThan)
+		return activities_model.DeleteOldActions(ctx, olderThanConfig.OlderThan)
 	})
 }
 
@@ -150,7 +150,7 @@ func registerUpdateGiteaChecker() {
 			RunAtStart: false,
 			Schedule:   "@every 168h",
 		},
-		HTTPEndpoint: "https://dl.gitea.io/gitea/version.json",
+		HTTPEndpoint: "https://dl.gitea.com/gitea/version.json",
 	}, func(ctx context.Context, _ *user_model.User, config Config) error {
 		updateCheckerConfig := config.(*UpdateCheckerConfig)
 		return updatechecker.GiteaUpdateChecker(updateCheckerConfig.HTTPEndpoint)
@@ -167,38 +167,39 @@ func registerDeleteOldSystemNotices() {
 		OlderThan: 365 * 24 * time.Hour,
 	}, func(ctx context.Context, _ *user_model.User, config Config) error {
 		olderThanConfig := config.(*OlderThanConfig)
-		return system.DeleteOldSystemNotices(olderThanConfig.OlderThan)
+		return system.DeleteOldSystemNotices(ctx, olderThanConfig.OlderThan)
 	})
+}
+
+type GCLFSConfig struct {
+	BaseConfig
+	OlderThan                time.Duration
+	LastUpdatedMoreThanAgo   time.Duration
+	NumberToCheckPerRepo     int64
+	ProportionToCheckPerRepo float64
 }
 
 func registerGCLFS() {
 	if !setting.LFS.StartServer {
 		return
 	}
-	type GCLFSConfig struct {
-		OlderThanConfig
-		LastUpdatedMoreThanAgo   time.Duration
-		NumberToCheckPerRepo     int64
-		ProportionToCheckPerRepo float64
-	}
 
 	RegisterTaskFatal("gc_lfs", &GCLFSConfig{
-		OlderThanConfig: OlderThanConfig{
-			BaseConfig: BaseConfig{
-				Enabled:    false,
-				RunAtStart: false,
-				Schedule:   "@every 24h",
-			},
-			// Only attempt to garbage collect lfs meta objects older than a week as the order of git lfs upload
-			// and git object upload is not necessarily guaranteed. It's possible to imagine a situation whereby
-			// an LFS object is uploaded but the git branch is not uploaded immediately, or there are some rapid
-			// changes in new branches that might lead to lfs objects becoming temporarily unassociated with git
-			// objects.
-			//
-			// It is likely that a week is potentially excessive but it should definitely be enough that any
-			// unassociated LFS object is genuinely unassociated.
-			OlderThan: 24 * time.Hour * 7,
+		BaseConfig: BaseConfig{
+			Enabled:    false,
+			RunAtStart: false,
+			Schedule:   "@every 24h",
 		},
+		// Only attempt to garbage collect lfs meta objects older than a week as the order of git lfs upload
+		// and git object upload is not necessarily guaranteed. It's possible to imagine a situation whereby
+		// an LFS object is uploaded but the git branch is not uploaded immediately, or there are some rapid
+		// changes in new branches that might lead to lfs objects becoming temporarily unassociated with git
+		// objects.
+		//
+		// It is likely that a week is potentially excessive but it should definitely be enough that any
+		// unassociated LFS object is genuinely unassociated.
+		OlderThan: 24 * time.Hour * 7,
+
 		// Only GC things that haven't been looked at in the past 3 days
 		LastUpdatedMoreThanAgo:   24 * time.Hour * 3,
 		NumberToCheckPerRepo:     100,
@@ -210,6 +211,16 @@ func registerGCLFS() {
 			OlderThan:               time.Now().Add(-gcLFSConfig.OlderThan),
 			UpdatedLessRecentlyThan: time.Now().Add(-gcLFSConfig.LastUpdatedMoreThanAgo),
 		})
+	})
+}
+
+func registerRebuildIssueIndexer() {
+	RegisterTaskFatal("rebuild_issue_indexer", &BaseConfig{
+		Enabled:    false,
+		RunAtStart: false,
+		Schedule:   "@annually",
+	}, func(ctx context.Context, _ *user_model.User, config Config) error {
+		return issue_indexer.PopulateIssueIndexer(ctx)
 	})
 }
 
@@ -227,4 +238,5 @@ func initExtendedTasks() {
 	registerUpdateGiteaChecker()
 	registerDeleteOldSystemNotices()
 	registerGCLFS()
+	registerRebuildIssueIndexer()
 }

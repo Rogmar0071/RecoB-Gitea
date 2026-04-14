@@ -5,12 +5,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 
+	actions_model "code.gitea.io/gitea/models/actions"
 	"code.gitea.io/gitea/models/db"
 	git_model "code.gitea.io/gitea/models/git"
-	"code.gitea.io/gitea/models/migrations"
 	packages_model "code.gitea.io/gitea/models/packages"
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
@@ -18,76 +20,113 @@ import (
 	packages_module "code.gitea.io/gitea/modules/packages"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/storage"
+	"code.gitea.io/gitea/services/versioned_migration"
 
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
-// CmdMigrateStorage represents the available migrate storage sub-command.
-var CmdMigrateStorage = cli.Command{
-	Name:        "migrate-storage",
-	Usage:       "Migrate the storage",
-	Description: "Copies stored files from storage configured in app.ini to parameter-configured storage",
-	Action:      runMigrateStorage,
-	Flags: []cli.Flag{
-		cli.StringFlag{
-			Name:  "type, t",
-			Value: "",
-			Usage: "Type of stored files to copy.  Allowed types: 'attachments', 'lfs', 'avatars', 'repo-avatars', 'repo-archivers', 'packages'",
+func newMigrateStorageCommand() *cli.Command {
+	return &cli.Command{
+		Name:        "migrate-storage",
+		Usage:       "Migrate the storage",
+		Description: "Copies stored files from storage configured in app.ini to parameter-configured storage",
+		Action:      runMigrateStorage,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "type",
+				Aliases: []string{"t"},
+				Value:   "",
+				Usage:   "Type of stored files to copy.  Allowed types: 'attachments', 'lfs', 'avatars', 'repo-avatars', 'repo-archivers', 'packages', 'actions-log', 'actions-artifacts'",
+			},
+			&cli.StringFlag{
+				Name:    "storage",
+				Aliases: []string{"s"},
+				Value:   "",
+				Usage:   "New storage type: local (default), minio or azureblob",
+			},
+			&cli.StringFlag{
+				Name:    "path",
+				Aliases: []string{"p"},
+				Value:   "",
+				Usage:   "New storage placement if store is local (leave blank for default)",
+			},
+			// Minio Storage special configurations
+			&cli.StringFlag{
+				Name:  "minio-endpoint",
+				Value: "",
+				Usage: "Minio storage endpoint",
+			},
+			&cli.StringFlag{
+				Name:  "minio-access-key-id",
+				Value: "",
+				Usage: "Minio storage accessKeyID",
+			},
+			&cli.StringFlag{
+				Name:  "minio-secret-access-key",
+				Value: "",
+				Usage: "Minio storage secretAccessKey",
+			},
+			&cli.StringFlag{
+				Name:  "minio-bucket",
+				Value: "",
+				Usage: "Minio storage bucket",
+			},
+			&cli.StringFlag{
+				Name:  "minio-location",
+				Value: "",
+				Usage: "Minio storage location to create bucket",
+			},
+			&cli.StringFlag{
+				Name:  "minio-base-path",
+				Value: "",
+				Usage: "Minio storage base path on the bucket",
+			},
+			&cli.BoolFlag{
+				Name:  "minio-use-ssl",
+				Usage: "Enable SSL for minio",
+			},
+			&cli.BoolFlag{
+				Name:  "minio-insecure-skip-verify",
+				Usage: "Skip SSL verification",
+			},
+			&cli.StringFlag{
+				Name:  "minio-checksum-algorithm",
+				Value: "",
+				Usage: "Minio checksum algorithm (default/md5)",
+			},
+			&cli.StringFlag{
+				Name:  "minio-bucket-lookup-type",
+				Value: "",
+				Usage: "Minio bucket lookup type",
+			},
+			// Azure Blob Storage special configurations
+			&cli.StringFlag{
+				Name:  "azureblob-endpoint",
+				Value: "",
+				Usage: "Azure Blob storage endpoint",
+			},
+			&cli.StringFlag{
+				Name:  "azureblob-account-name",
+				Value: "",
+				Usage: "Azure Blob storage account name",
+			},
+			&cli.StringFlag{
+				Name:  "azureblob-account-key",
+				Value: "",
+				Usage: "Azure Blob storage account key",
+			},
+			&cli.StringFlag{
+				Name:  "azureblob-container",
+				Value: "",
+				Usage: "Azure Blob storage container",
+			},
+			&cli.StringFlag{
+				Name:  "azureblob-base-path",
+				Value: "",
+				Usage: "Azure Blob storage base path",
+			},
 		},
-		cli.StringFlag{
-			Name:  "storage, s",
-			Value: "",
-			Usage: "New storage type: local (default) or minio",
-		},
-		cli.StringFlag{
-			Name:  "path, p",
-			Value: "",
-			Usage: "New storage placement if store is local (leave blank for default)",
-		},
-		cli.StringFlag{
-			Name:  "minio-endpoint",
-			Value: "",
-			Usage: "Minio storage endpoint",
-		},
-		cli.StringFlag{
-			Name:  "minio-access-key-id",
-			Value: "",
-			Usage: "Minio storage accessKeyID",
-		},
-		cli.StringFlag{
-			Name:  "minio-secret-access-key",
-			Value: "",
-			Usage: "Minio storage secretAccessKey",
-		},
-		cli.StringFlag{
-			Name:  "minio-bucket",
-			Value: "",
-			Usage: "Minio storage bucket",
-		},
-		cli.StringFlag{
-			Name:  "minio-location",
-			Value: "",
-			Usage: "Minio storage location to create bucket",
-		},
-		cli.StringFlag{
-			Name:  "minio-base-path",
-			Value: "",
-			Usage: "Minio storage base path on the bucket",
-		},
-		cli.BoolFlag{
-			Name:  "minio-use-ssl",
-			Usage: "Enable SSL for minio",
-		},
-		cli.BoolFlag{
-			Name:  "minio-insecure-skip-verify",
-			Usage: "Skip SSL verification",
-		},
-		cli.StringFlag{
-			Name:  "minio-checksum-algorithm",
-			Value: "",
-			Usage: "Minio checksum algorithm (default/md5)",
-		},
-	},
+	}
 }
 
 func migrateAttachments(ctx context.Context, dstStorage storage.ObjectStorage) error {
@@ -106,6 +145,9 @@ func migrateLFS(ctx context.Context, dstStorage storage.ObjectStorage) error {
 
 func migrateAvatars(ctx context.Context, dstStorage storage.ObjectStorage) error {
 	return db.Iterate(ctx, nil, func(ctx context.Context, user *user_model.User) error {
+		if user.CustomAvatarRelativePath() == "" {
+			return nil
+		}
 		_, err := storage.Copy(dstStorage, user.CustomAvatarRelativePath(), storage.Avatars, user.CustomAvatarRelativePath())
 		return err
 	})
@@ -113,6 +155,9 @@ func migrateAvatars(ctx context.Context, dstStorage storage.ObjectStorage) error
 
 func migrateRepoAvatars(ctx context.Context, dstStorage storage.ObjectStorage) error {
 	return db.Iterate(ctx, nil, func(ctx context.Context, repo *repo_model.Repository) error {
+		if repo.CustomAvatarRelativePath() == "" {
+			return nil
+		}
 		_, err := storage.Copy(dstStorage, repo.CustomAvatarRelativePath(), storage.RepoAvatars, repo.CustomAvatarRelativePath())
 		return err
 	})
@@ -134,11 +179,43 @@ func migratePackages(ctx context.Context, dstStorage storage.ObjectStorage) erro
 	})
 }
 
-func runMigrateStorage(ctx *cli.Context) error {
-	stdCtx, cancel := installSignals()
-	defer cancel()
+func migrateActionsLog(ctx context.Context, dstStorage storage.ObjectStorage) error {
+	return db.Iterate(ctx, nil, func(ctx context.Context, task *actions_model.ActionTask) error {
+		if task.LogExpired {
+			// the log has been cleared
+			return nil
+		}
+		if !task.LogInStorage {
+			// running tasks store logs in DBFS
+			return nil
+		}
+		p := task.LogFilename
+		_, err := storage.Copy(dstStorage, p, storage.Actions, p)
+		return err
+	})
+}
 
-	if err := initDB(stdCtx); err != nil {
+func migrateActionsArtifacts(ctx context.Context, dstStorage storage.ObjectStorage) error {
+	return db.Iterate(ctx, nil, func(ctx context.Context, artifact *actions_model.ActionArtifact) error {
+		if artifact.Status == actions_model.ArtifactStatusExpired {
+			return nil
+		}
+
+		_, err := storage.Copy(dstStorage, artifact.StoragePath, storage.ActionsArtifacts, artifact.StoragePath)
+		if err != nil {
+			// ignore files that do not exist
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+
+		return nil
+	})
+}
+
+func runMigrateStorage(ctx context.Context, cmd *cli.Command) error {
+	if err := initDB(ctx); err != nil {
 		return err
 	}
 
@@ -148,7 +225,7 @@ func runMigrateStorage(ctx *cli.Context) error {
 	log.Info("Log path: %s", setting.Log.RootPath)
 	log.Info("Configuration file: %s", setting.CustomConf)
 
-	if err := db.InitEngineWithMigration(context.Background(), migrations.Migrate); err != nil {
+	if err := db.InitEngineWithMigration(context.Background(), versioned_migration.Migrate); err != nil {
 		log.Fatal("Failed to initialize ORM engine: %v", err)
 		return err
 	}
@@ -159,58 +236,75 @@ func runMigrateStorage(ctx *cli.Context) error {
 
 	var dstStorage storage.ObjectStorage
 	var err error
-	switch strings.ToLower(ctx.String("storage")) {
+	switch strings.ToLower(cmd.String("storage")) {
 	case "":
 		fallthrough
-	case string(storage.LocalStorageType):
-		p := ctx.String("path")
+	case string(setting.LocalStorageType):
+		p := cmd.String("path")
 		if p == "" {
-			log.Fatal("Path must be given when storage is loal")
+			log.Fatal("Path must be given when storage is local")
 			return nil
 		}
 		dstStorage, err = storage.NewLocalStorage(
-			stdCtx,
-			storage.LocalStorageConfig{
+			ctx,
+			&setting.Storage{
 				Path: p,
 			})
-	case string(storage.MinioStorageType):
+	case string(setting.MinioStorageType):
 		dstStorage, err = storage.NewMinioStorage(
-			stdCtx,
-			storage.MinioStorageConfig{
-				Endpoint:           ctx.String("minio-endpoint"),
-				AccessKeyID:        ctx.String("minio-access-key-id"),
-				SecretAccessKey:    ctx.String("minio-secret-access-key"),
-				Bucket:             ctx.String("minio-bucket"),
-				Location:           ctx.String("minio-location"),
-				BasePath:           ctx.String("minio-base-path"),
-				UseSSL:             ctx.Bool("minio-use-ssl"),
-				InsecureSkipVerify: ctx.Bool("minio-insecure-skip-verify"),
-				ChecksumAlgorithm:  ctx.String("minio-checksum-algorithm"),
+			ctx,
+			&setting.Storage{
+				MinioConfig: setting.MinioStorageConfig{
+					Endpoint:           cmd.String("minio-endpoint"),
+					AccessKeyID:        cmd.String("minio-access-key-id"),
+					SecretAccessKey:    cmd.String("minio-secret-access-key"),
+					Bucket:             cmd.String("minio-bucket"),
+					Location:           cmd.String("minio-location"),
+					BasePath:           cmd.String("minio-base-path"),
+					UseSSL:             cmd.Bool("minio-use-ssl"),
+					InsecureSkipVerify: cmd.Bool("minio-insecure-skip-verify"),
+					ChecksumAlgorithm:  cmd.String("minio-checksum-algorithm"),
+					BucketLookUpType:   cmd.String("minio-bucket-lookup-type"),
+				},
+			})
+	case string(setting.AzureBlobStorageType):
+		dstStorage, err = storage.NewAzureBlobStorage(
+			ctx,
+			&setting.Storage{
+				AzureBlobConfig: setting.AzureBlobStorageConfig{
+					Endpoint:    cmd.String("azureblob-endpoint"),
+					AccountName: cmd.String("azureblob-account-name"),
+					AccountKey:  cmd.String("azureblob-account-key"),
+					Container:   cmd.String("azureblob-container"),
+					BasePath:    cmd.String("azureblob-base-path"),
+				},
 			})
 	default:
-		return fmt.Errorf("unsupported storage type: %s", ctx.String("storage"))
+		return fmt.Errorf("unsupported storage type: %s", cmd.String("storage"))
 	}
 	if err != nil {
 		return err
 	}
 
 	migratedMethods := map[string]func(context.Context, storage.ObjectStorage) error{
-		"attachments":    migrateAttachments,
-		"lfs":            migrateLFS,
-		"avatars":        migrateAvatars,
-		"repo-avatars":   migrateRepoAvatars,
-		"repo-archivers": migrateRepoArchivers,
-		"packages":       migratePackages,
+		"attachments":       migrateAttachments,
+		"lfs":               migrateLFS,
+		"avatars":           migrateAvatars,
+		"repo-avatars":      migrateRepoAvatars,
+		"repo-archivers":    migrateRepoArchivers,
+		"packages":          migratePackages,
+		"actions-log":       migrateActionsLog,
+		"actions-artifacts": migrateActionsArtifacts,
 	}
 
-	tp := strings.ToLower(ctx.String("type"))
+	tp := strings.ToLower(cmd.String("type"))
 	if m, ok := migratedMethods[tp]; ok {
-		if err := m(stdCtx, dstStorage); err != nil {
+		if err := m(ctx, dstStorage); err != nil {
 			return err
 		}
 		log.Info("%s files have successfully been copied to the new storage.", tp)
 		return nil
 	}
 
-	return fmt.Errorf("unsupported storage: %s", ctx.String("type"))
+	return fmt.Errorf("unsupported storage: %s", cmd.String("type"))
 }

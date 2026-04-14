@@ -9,6 +9,7 @@ import (
 
 	activities_model "code.gitea.io/gitea/models/activities"
 	issues_model "code.gitea.io/gitea/models/issues"
+	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/graceful"
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/log"
@@ -71,7 +72,7 @@ loop:
 
 			now := timeutil.TimeStampNow().Add(-2)
 
-			uidCounts, err := activities_model.GetUIDsAndNotificationCounts(then, now)
+			uidCounts, err := activities_model.GetUIDsAndNotificationCounts(ctx, then, now)
 			if err != nil {
 				log.Error("Unable to get UIDcounts: %v", err)
 			}
@@ -84,14 +85,20 @@ loop:
 			then = now
 
 			if setting.Service.EnableTimetracking {
-				usersStopwatches, err := issues_model.GetUIDsAndStopwatch()
+				usersStopwatches, err := issues_model.GetUIDsAndStopwatch(ctx)
 				if err != nil {
 					log.Error("Unable to get GetUIDsAndStopwatch: %v", err)
 					return
 				}
 
 				for _, userStopwatches := range usersStopwatches {
-					apiSWs, err := convert.ToStopWatches(userStopwatches.StopWatches)
+					u, err := user_model.GetUserByID(ctx, userStopwatches.UserID)
+					if err != nil {
+						log.Error("Unable to get user %d: %v", userStopwatches.UserID, err)
+						continue
+					}
+
+					apiSWs, err := convert.ToStopWatches(ctx, u, userStopwatches.StopWatches)
 					if err != nil {
 						if !issues_model.IsErrIssueNotExist(err) {
 							log.Error("Unable to APIFormat stopwatches: %v", err)

@@ -10,8 +10,11 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 
+	"code.gitea.io/gitea/modules/httplib"
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/public"
 	"code.gitea.io/gitea/modules/setting"
 )
 
@@ -20,7 +23,7 @@ var ErrURLNotSupported = errors.New("url method not supported")
 
 // ErrInvalidConfiguration is called when there is invalid configuration for a storage
 type ErrInvalidConfiguration struct {
-	cfg interface{}
+	cfg any
 	err error
 }
 
@@ -37,16 +40,15 @@ func IsErrInvalidConfiguration(err error) bool {
 	return ok
 }
 
-// Type is a type of Storage
-type Type string
+type Type = setting.StorageType
 
 // NewStorageFunc is a function that creates a storage
-type NewStorageFunc func(ctx context.Context, cfg interface{}) (ObjectStorage, error)
+type NewStorageFunc func(ctx context.Context, cfg *setting.Storage) (ObjectStorage, error)
 
 var storageMap = map[Type]NewStorageFunc{}
 
 // RegisterStorageType registers a provided storage type with a function to create it
-func RegisterStorageType(typ Type, fn func(ctx context.Context, cfg interface{}) (ObjectStorage, error)) {
+func RegisterStorageType(typ Type, fn func(ctx context.Context, cfg *setting.Storage) (ObjectStorage, error)) {
 	storageMap[typ] = fn
 }
 
@@ -57,15 +59,63 @@ type Object interface {
 	Stat() (os.FileInfo, error)
 }
 
+// ServeDirectOptions customizes HTTP headers for a generated signed URL.
+type ServeDirectOptions struct {
+	// Overrides the automatically detected MIME type.
+	ContentType string
+}
+
+// Safe defaults are applied only when not explicitly overridden by the caller.
+func prepareServeDirectOptions(optsOptional *ServeDirectOptions, name string) (ret struct {
+	ContentType        string
+	ContentDisposition string
+},
+) {
+	// Here we might not know the real filename, and it's quite inefficient to detect the MIME type by pre-fetching the object head.
+	// So we just do a quick detection by extension name, at least it works for the "View Raw File" for an LFS file on the Web UI.
+	// TODO: OBJECT-STORAGE-CONTENT-TYPE: need a complete solution and refactor for Azure in the future
+
+	if optsOptional != nil {
+		ret.ContentType = optsOptional.ContentType
+	}
+	name = path.Base(name)
+	if ret.ContentType == "" {
+		ext := path.Ext(name)
+		ret.ContentType = public.DetectWellKnownMimeType(ext)
+	}
+	// When using ServeDirect, the URL is from the object storage's web server,
+	// it is not the same origin as Gitea server, so it should be safe enough to use "inline" to render the content directly.
+	// If a browser doesn't support the content type to be displayed inline, browser will download with the filename.
+	ret.ContentDisposition = httplib.EncodeContentDispositionInline(name)
+	return ret
+}
+
 // ObjectStorage represents an object storage to handle a bucket and files
 type ObjectStorage interface {
 	Open(path string) (Object, error)
-	// Save store a object, if size is unknown set -1
+
+	// Save store an object, if size is unknown set -1
+	// NOTICE: Some storage SDK will close the Reader after saving if it is also a Closer,
+	// DO NOT use the reader anymore after Save, or wrap it to a non-Closer reader.
 	Save(path string, r io.Reader, size int64) (int64, error)
+
 	Stat(path string) (os.FileInfo, error)
 	Delete(path string) error
-	URL(path, name string) (*url.URL, error)
-	IterateObjects(func(path string, obj Object) error) error
+
+	// ServeDirectURL generates a "serve-direct" URL for the specified blob storage file,
+	// end user (browser) will use this URL to access the file directly from the object storage, bypassing Gitea server.
+	// Usually the link is time-limited (a few minutes) and contains a signature to ensure security.
+	// The generated URL must NOT use the same origin as Gitea server, otherwise it will cause security issues.
+	// * method defines which HTTP method is permitted for certain storage providers (e.g., MinIO).
+	// * opt allows customizing the Content-Type and Content-Disposition headers.
+	// TODO: need to merge "ServeDirect()" check into this function, avoid duplicate code and potential inconsistency.
+	ServeDirectURL(path, name, method string, opt *ServeDirectOptions) (*url.URL, error)
+
+	// IterateObjects calls the iterator function for each object in the storage with the given path as prefix
+	// The "fullPath" argument in callback is the full path in this storage.
+	// * IterateObjects("", ...): iterate all objects in this storage
+	// * IterateObjects("sub-path", ...): iterate all objects with "sub-path" as prefix in this storage, the "fullPath" will be like "sub-path/xxx"
+	IterateObjects(basePath string, iterator func(fullPath string, obj Object) error) error
 }
 
 // Copy copies a file from source ObjectStorage to dest ObjectStorage
@@ -87,14 +137,14 @@ func Copy(dstStorage ObjectStorage, dstPath string, srcStorage ObjectStorage, sr
 
 // Clean delete all the objects in this storage
 func Clean(storage ObjectStorage) error {
-	return storage.IterateObjects(func(path string, obj Object) error {
+	return storage.IterateObjects("", func(path string, obj Object) error {
 		_ = obj.Close()
 		return storage.Delete(path)
 	})
 }
 
 // SaveFrom saves data to the ObjectStorage with path p from the callback
-func SaveFrom(objStorage ObjectStorage, p string, callback func(w io.Writer) error) error {
+func SaveFrom(objStorage ObjectStorage, path string, callback func(w io.Writer) error) error {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	go func() {
@@ -104,7 +154,7 @@ func SaveFrom(objStorage ObjectStorage, p string, callback func(w io.Writer) err
 		}
 	}()
 
-	_, err := objStorage.Save(p, pr, -1)
+	_, err := objStorage.Save(path, pr, -1)
 	return err
 }
 
@@ -128,9 +178,11 @@ var (
 
 	// Actions represents actions storage
 	Actions ObjectStorage = uninitializedStorage
+	// ActionsArtifacts Artifacts represents actions artifacts storage
+	ActionsArtifacts ObjectStorage = uninitializedStorage
 )
 
-// Init init the stoarge
+// Init init the storage
 func Init() error {
 	for _, f := range []func() error{
 		initAttachments,
@@ -149,11 +201,11 @@ func Init() error {
 }
 
 // NewStorage takes a storage type and some config and returns an ObjectStorage or an error
-func NewStorage(typStr string, cfg interface{}) (ObjectStorage, error) {
+func NewStorage(typStr Type, cfg *setting.Storage) (ObjectStorage, error) {
 	if len(typStr) == 0 {
-		typStr = string(LocalStorageType)
+		typStr = setting.LocalStorageType
 	}
-	fn, ok := storageMap[Type(typStr)]
+	fn, ok := storageMap[typStr]
 	if !ok {
 		return nil, fmt.Errorf("Unsupported storage type: %s", typStr)
 	}
@@ -163,7 +215,7 @@ func NewStorage(typStr string, cfg interface{}) (ObjectStorage, error) {
 
 func initAvatars() (err error) {
 	log.Info("Initialising Avatar storage with type: %s", setting.Avatar.Storage.Type)
-	Avatars, err = NewStorage(setting.Avatar.Storage.Type, &setting.Avatar.Storage)
+	Avatars, err = NewStorage(setting.Avatar.Storage.Type, setting.Avatar.Storage)
 	return err
 }
 
@@ -173,7 +225,7 @@ func initAttachments() (err error) {
 		return nil
 	}
 	log.Info("Initialising Attachment storage with type: %s", setting.Attachment.Storage.Type)
-	Attachments, err = NewStorage(setting.Attachment.Storage.Type, &setting.Attachment.Storage)
+	Attachments, err = NewStorage(setting.Attachment.Storage.Type, setting.Attachment.Storage)
 	return err
 }
 
@@ -183,19 +235,19 @@ func initLFS() (err error) {
 		return nil
 	}
 	log.Info("Initialising LFS storage with type: %s", setting.LFS.Storage.Type)
-	LFS, err = NewStorage(setting.LFS.Storage.Type, &setting.LFS.Storage)
+	LFS, err = NewStorage(setting.LFS.Storage.Type, setting.LFS.Storage)
 	return err
 }
 
 func initRepoAvatars() (err error) {
 	log.Info("Initialising Repository Avatar storage with type: %s", setting.RepoAvatar.Storage.Type)
-	RepoAvatars, err = NewStorage(setting.RepoAvatar.Storage.Type, &setting.RepoAvatar.Storage)
+	RepoAvatars, err = NewStorage(setting.RepoAvatar.Storage.Type, setting.RepoAvatar.Storage)
 	return err
 }
 
 func initRepoArchives() (err error) {
 	log.Info("Initialising Repository Archive storage with type: %s", setting.RepoArchive.Storage.Type)
-	RepoArchives, err = NewStorage(setting.RepoArchive.Storage.Type, &setting.RepoArchive.Storage)
+	RepoArchives, err = NewStorage(setting.RepoArchive.Storage.Type, setting.RepoArchive.Storage)
 	return err
 }
 
@@ -205,16 +257,21 @@ func initPackages() (err error) {
 		return nil
 	}
 	log.Info("Initialising Packages storage with type: %s", setting.Packages.Storage.Type)
-	Packages, err = NewStorage(setting.Packages.Storage.Type, &setting.Packages.Storage)
+	Packages, err = NewStorage(setting.Packages.Storage.Type, setting.Packages.Storage)
 	return err
 }
 
 func initActions() (err error) {
 	if !setting.Actions.Enabled {
 		Actions = discardStorage("Actions isn't enabled")
+		ActionsArtifacts = discardStorage("ActionsArtifacts isn't enabled")
 		return nil
 	}
-	log.Info("Initialising Actions storage with type: %s", setting.Actions.Storage.Type)
-	Actions, err = NewStorage(setting.Actions.Storage.Type, &setting.Actions.Storage)
+	log.Info("Initialising Actions storage with type: %s", setting.Actions.LogStorage.Type)
+	if Actions, err = NewStorage(setting.Actions.LogStorage.Type, setting.Actions.LogStorage); err != nil {
+		return err
+	}
+	log.Info("Initialising ActionsArtifacts storage with type: %s", setting.Actions.ArtifactStorage.Type)
+	ActionsArtifacts, err = NewStorage(setting.Actions.ArtifactStorage.Type, setting.Actions.ArtifactStorage)
 	return err
 }

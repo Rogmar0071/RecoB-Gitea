@@ -4,14 +4,10 @@
 package setting
 
 import (
-	"path/filepath"
-
 	repo_model "code.gitea.io/gitea/models/repo"
-	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/context"
-	repo_module "code.gitea.io/gitea/modules/repository"
+	"code.gitea.io/gitea/modules/gitrepo"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/services/context"
 	repo_service "code.gitea.io/gitea/services/repository"
 )
 
@@ -28,24 +24,23 @@ func AdoptOrDeleteRepository(ctx *context.Context) {
 	action := ctx.FormString("action")
 
 	ctxUser := ctx.Doer
-	root := user_model.UserPath(ctxUser.LowerName)
 
 	// check not a repo
-	has, err := repo_model.IsRepositoryExist(ctx, ctxUser, dir)
+	has, err := repo_model.IsRepositoryModelExist(ctx, ctxUser, dir)
 	if err != nil {
 		ctx.ServerError("IsRepositoryExist", err)
 		return
 	}
 
-	isDir, err := util.IsDir(filepath.Join(root, dir+".git"))
+	exist, err := gitrepo.IsRepositoryExist(ctx, repo_model.StorageRepo(repo_model.RelativePath(ctxUser.Name, dir)))
 	if err != nil {
 		ctx.ServerError("IsDir", err)
 		return
 	}
-	if has || !isDir {
+	if has || !exist {
 		// Fallthrough to failure mode
 	} else if action == "adopt" && allowAdopt {
-		if _, err := repo_service.AdoptRepository(ctxUser, ctxUser, repo_module.CreateRepoOptions{
+		if _, err := repo_service.AdoptRepository(ctx, ctxUser, ctxUser, repo_service.CreateRepoOptions{
 			Name:      dir,
 			IsPrivate: true,
 		}); err != nil {
@@ -54,7 +49,7 @@ func AdoptOrDeleteRepository(ctx *context.Context) {
 		}
 		ctx.Flash.Success(ctx.Tr("repo.adopt_preexisting_success", dir))
 	} else if action == "delete" && allowDelete {
-		if err := repo_service.DeleteUnadoptedRepository(ctxUser, ctxUser, dir); err != nil {
+		if err := repo_service.DeleteUnadoptedRepository(ctx, ctxUser, ctxUser, dir); err != nil {
 			ctx.ServerError("repository.AdoptRepository", err)
 			return
 		}

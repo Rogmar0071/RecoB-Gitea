@@ -6,44 +6,42 @@ package repo
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"code.gitea.io/gitea/models/db"
-	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/util"
 )
 
 // UpdateRepositoryOwnerNames updates repository owner_names (this should only be used when the ownerName has changed case)
-func UpdateRepositoryOwnerNames(ownerID int64, ownerName string) error {
+func UpdateRepositoryOwnerNames(ctx context.Context, ownerID int64, ownerName string) error {
 	if ownerID == 0 {
 		return nil
 	}
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
-		return err
-	}
-	defer committer.Close()
 
-	if _, err := db.GetEngine(ctx).Where("owner_id = ?", ownerID).Cols("owner_name").Update(&Repository{
+	if _, err := db.GetEngine(ctx).Where("owner_id = ?", ownerID).Cols("owner_name").NoAutoTime().Update(&Repository{
 		OwnerName: ownerName,
 	}); err != nil {
 		return err
 	}
 
-	return committer.Commit()
+	return nil
 }
 
 // UpdateRepositoryUpdatedTime updates a repository's updated time
-func UpdateRepositoryUpdatedTime(repoID int64, updateTime time.Time) error {
-	_, err := db.GetEngine(db.DefaultContext).Exec("UPDATE repository SET updated_unix = ? WHERE id = ?", updateTime.Unix(), repoID)
+func UpdateRepositoryUpdatedTime(ctx context.Context, repoID int64, updateTime time.Time) error {
+	_, err := db.GetEngine(ctx).Exec("UPDATE repository SET updated_unix = ? WHERE id = ?", updateTime.Unix(), repoID)
 	return err
 }
 
-// UpdateRepositoryCols updates repository's columns
-func UpdateRepositoryCols(ctx context.Context, repo *Repository, cols ...string) error {
-	_, err := db.GetEngine(ctx).ID(repo.ID).Cols(cols...).Update(repo)
+// UpdateRepositoryColsWithAutoTime updates repository's columns and the timestamp fields automatically
+func UpdateRepositoryColsWithAutoTime(ctx context.Context, repo *Repository, colName string, moreColNames ...string) error {
+	_, err := db.GetEngine(ctx).ID(repo.ID).Cols(append([]string{colName}, moreColNames...)...).Update(repo)
+	return err
+}
+
+// UpdateRepositoryColsNoAutoTime updates repository's columns, doesn't change timestamp field automatically
+func UpdateRepositoryColsNoAutoTime(ctx context.Context, repo *Repository, colName string, moreColNames ...string) error {
+	_, err := db.GetEngine(ctx).ID(repo.ID).Cols(append([]string{colName}, moreColNames...)...).NoAutoTime().Update(repo)
 	return err
 }
 
@@ -106,88 +104,12 @@ func (err ErrRepoFilesAlreadyExist) Unwrap() error {
 	return util.ErrAlreadyExist
 }
 
-// CheckCreateRepository check if could created a repository
-func CheckCreateRepository(doer, u *user_model.User, name string, overwriteOrAdopt bool) error {
-	if !doer.CanCreateRepo() {
-		return ErrReachLimitOfRepo{u.MaxRepoCreation}
-	}
-
-	if err := IsUsableRepoName(name); err != nil {
-		return err
-	}
-
-	has, err := IsRepositoryExist(db.DefaultContext, u, name)
-	if err != nil {
-		return fmt.Errorf("IsRepositoryExist: %w", err)
-	} else if has {
-		return ErrRepoAlreadyExist{u.Name, name}
-	}
-
-	repoPath := RepoPath(u.Name, name)
-	isExist, err := util.IsExist(repoPath)
-	if err != nil {
-		log.Error("Unable to check if %s exists. Error: %v", repoPath, err)
-		return err
-	}
-	if !overwriteOrAdopt && isExist {
-		return ErrRepoFilesAlreadyExist{u.Name, name}
-	}
-	return nil
-}
-
-// ChangeRepositoryName changes all corresponding setting from old repository name to new one.
-func ChangeRepositoryName(doer *user_model.User, repo *Repository, newRepoName string) (err error) {
-	oldRepoName := repo.Name
-	newRepoName = strings.ToLower(newRepoName)
-	if err = IsUsableRepoName(newRepoName); err != nil {
-		return err
-	}
-
-	if err := repo.LoadOwner(db.DefaultContext); err != nil {
-		return err
-	}
-
-	has, err := IsRepositoryExist(db.DefaultContext, repo.Owner, newRepoName)
-	if err != nil {
-		return fmt.Errorf("IsRepositoryExist: %w", err)
-	} else if has {
-		return ErrRepoAlreadyExist{repo.Owner.Name, newRepoName}
-	}
-
-	newRepoPath := RepoPath(repo.Owner.Name, newRepoName)
-	if err = util.Rename(repo.RepoPath(), newRepoPath); err != nil {
-		return fmt.Errorf("rename repository directory: %w", err)
-	}
-
-	wikiPath := repo.WikiPath()
-	isExist, err := util.IsExist(wikiPath)
-	if err != nil {
-		log.Error("Unable to check if %s exists. Error: %v", wikiPath, err)
-		return err
-	}
-	if isExist {
-		if err = util.Rename(wikiPath, WikiPath(repo.Owner.Name, newRepoName)); err != nil {
-			return fmt.Errorf("rename repository wiki: %w", err)
-		}
-	}
-
-	ctx, committer, err := db.TxContext(db.DefaultContext)
-	if err != nil {
-		return err
-	}
-	defer committer.Close()
-
-	if err := NewRedirect(ctx, repo.Owner.ID, repo.ID, oldRepoName, newRepoName); err != nil {
-		return err
-	}
-
-	return committer.Commit()
-}
-
 // UpdateRepoSize updates the repository size, calculating it using getDirectorySize
-func UpdateRepoSize(ctx context.Context, repoID, size int64) error {
-	_, err := db.GetEngine(ctx).ID(repoID).Cols("size").NoAutoTime().Update(&Repository{
-		Size: size,
+func UpdateRepoSize(ctx context.Context, repoID, gitSize, lfsSize int64) error {
+	_, err := db.GetEngine(ctx).ID(repoID).Cols("size", "git_size", "lfs_size").NoAutoTime().Update(&Repository{
+		Size:    gitSize + lfsSize,
+		GitSize: gitSize,
+		LFSSize: lfsSize,
 	})
 	return err
 }

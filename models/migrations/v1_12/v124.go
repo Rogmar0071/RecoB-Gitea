@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_12 //nolint
+package v1_12
 
 import (
 	"xorm.io/xorm"
@@ -19,5 +19,5 @@ func AddUserRepoMissingColumns(x *xorm.Engine) error {
 		Topics     []string `xorm:"TEXT JSON"`
 	}
 
-	return x.Sync2(new(User), new(Repository))
+	return x.Sync(new(User), new(Repository))
 }

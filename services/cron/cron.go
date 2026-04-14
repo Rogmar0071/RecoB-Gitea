@@ -10,22 +10,27 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/modules/graceful"
+	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/process"
-	"code.gitea.io/gitea/modules/sync"
 	"code.gitea.io/gitea/modules/translation"
 
-	"github.com/gogs/cron"
+	"github.com/go-co-op/gocron/v2"
 )
 
-var c = cron.New()
+var scheduler gocron.Scheduler
 
-// Prevent duplicate running tasks.
-var taskStatusTable = sync.NewStatusTable()
+func init() {
+	var err error
+	scheduler, err = gocron.NewScheduler(gocron.WithLocation(time.Local))
+	if err != nil {
+		log.Fatal("Unable to create cron scheduler: %v", err)
+	}
+}
 
-// NewContext begins cron tasks
+// Init begins cron tasks
 // Each cron task is run within the shutdown context as a running server
 // AtShutdown the cron server is stopped
-func NewContext(original context.Context) {
+func Init(original context.Context) {
 	defer pprof.SetGoroutineLabels(original)
 	_, _, finished := process.GetManager().AddTypedContext(graceful.GetManager().ShutdownContext(), "Service: Cron", process.SystemProcessType, true)
 	initBasicTasks()
@@ -39,11 +44,13 @@ func NewContext(original context.Context) {
 		}
 	}
 
-	c.Start()
+	scheduler.Start()
 	started = true
 	lock.Unlock()
 	graceful.GetManager().RunAtShutdown(context.Background(), func() {
-		c.Stop()
+		if err := scheduler.Shutdown(); err != nil {
+			log.Error("Unable to shutdown cron scheduler: %v", err)
+		}
 		lock.Lock()
 		started = false
 		lock.Unlock()
@@ -77,13 +84,20 @@ type TaskTable []*TaskTableRow
 
 // ListTasks returns all running cron tasks.
 func ListTasks() TaskTable {
-	entries := c.Entries()
-	eMap := map[string]*cron.Entry{}
-	for _, e := range entries {
-		eMap[e.Description] = e
+	jobs := scheduler.Jobs()
+	jobMap := map[string]gocron.Job{}
+	for _, job := range jobs {
+		// the first tag is the task name
+		tags := job.Tags()
+		if len(tags) == 0 { // should never happen
+			continue
+		}
+		jobMap[tags[0]] = job
 	}
+
 	lock.Lock()
 	defer lock.Unlock()
+
 	tTable := make([]*TaskTableRow, 0, len(tasks))
 	for _, task := range tasks {
 		spec := "-"
@@ -91,12 +105,20 @@ func ListTasks() TaskTable {
 			next time.Time
 			prev time.Time
 		)
-		if e, ok := eMap[task.Name]; ok {
-			spec = e.Spec
-			next = e.Next
-			prev = e.Prev
+		if e, ok := jobMap[task.Name]; ok {
+			tags := e.Tags()
+			if len(tags) > 1 {
+				spec = tags[1] // the second tag is the task spec
+			}
+			next, _ = e.NextRun()
+			prev, _ = e.LastRun()
 		}
+
 		task.lock.Lock()
+		// If the manual run is after the cron run, use that instead.
+		if prev.Before(task.LastRun) {
+			prev = task.LastRun
+		}
 		tTable = append(tTable, &TaskTableRow{
 			Name:        task.Name,
 			Spec:        spec,

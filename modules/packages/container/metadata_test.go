@@ -11,16 +11,19 @@ import (
 
 	oci "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseImageConfig(t *testing.T) {
 	description := "Image Description"
 	author := "Gitea"
 	license := "MIT"
-	projectURL := "https://gitea.io"
+	projectURL := "https://gitea.com"
 	repositoryURL := "https://gitea.com/gitea"
-	documentationURL := "https://docs.gitea.io"
+	documentationURL := "https://docs.gitea.com"
 
+	// FIXME: JSON-KEY-CASE: the test case is not right, the config fields are capitalized in the spec
+	// https://github.com/opencontainers/image-spec/blob/main/schema/config-schema.json
 	configOCI := `{"config": {"labels": {"` + labelAuthors + `": "` + author + `", "` + labelLicenses + `": "` + license + `", "` + labelURL + `": "` + projectURL + `", "` + labelSource + `": "` + repositoryURL + `", "` + labelDocumentation + `": "` + documentationURL + `", "` + labelDescription + `": "` + description + `"}}, "history": [{"created_by": "do it 1"}, {"created_by": "dummy #(nop) do it 2"}]}`
 
 	metadata, err := ParseImageConfig(oci.MediaTypeImageManifest, strings.NewReader(configOCI))
@@ -33,7 +36,7 @@ func TestParseImageConfig(t *testing.T) {
 	assert.Equal(t, projectURL, metadata.ProjectURL)
 	assert.Equal(t, repositoryURL, metadata.RepositoryURL)
 	assert.Equal(t, documentationURL, metadata.DocumentationURL)
-	assert.Equal(t, []string{"do it 1", "do it 2"}, metadata.ImageLayers)
+	assert.ElementsMatch(t, []string{"do it 1", "do it 2"}, metadata.ImageLayers)
 	assert.Equal(
 		t,
 		map[string]string{
@@ -46,7 +49,7 @@ func TestParseImageConfig(t *testing.T) {
 		},
 		metadata.Labels,
 	)
-	assert.Empty(t, metadata.MultiArch)
+	assert.Empty(t, metadata.Manifests)
 
 	configHelm := `{"description":"` + description + `", "home": "` + projectURL + `", "sources": ["` + repositoryURL + `"], "maintainers":[{"name":"` + author + `"}]}`
 
@@ -58,4 +61,8 @@ func TestParseImageConfig(t *testing.T) {
 	assert.ElementsMatch(t, []string{author}, metadata.Authors)
 	assert.Equal(t, projectURL, metadata.ProjectURL)
 	assert.Equal(t, repositoryURL, metadata.RepositoryURL)
+
+	metadata, err = ParseImageConfig("anything-unknown", strings.NewReader(""))
+	require.NoError(t, err)
+	assert.Equal(t, &Metadata{Platform: "unknown/unknown"}, metadata)
 }

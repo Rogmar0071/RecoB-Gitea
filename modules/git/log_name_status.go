@@ -14,27 +14,15 @@ import (
 	"strings"
 
 	"code.gitea.io/gitea/modules/container"
-
-	"github.com/djherbis/buffer"
-	"github.com/djherbis/nio/v3"
+	"code.gitea.io/gitea/modules/git/gitcmd"
+	"code.gitea.io/gitea/modules/log"
 )
 
 // LogNameStatusRepo opens git log --raw in the provided repo and returns a stdin pipe, a stdout reader and cancel function
 func LogNameStatusRepo(ctx context.Context, repository, head, treepath string, paths ...string) (*bufio.Reader, func()) {
-	// We often want to feed the commits in order into cat-file --batch, followed by their trees and sub trees as necessary.
-	// so let's create a batch stdin and stdout
-	stdoutReader, stdoutWriter := nio.Pipe(buffer.New(32 * 1024))
-
 	// Lets also create a context so that we can absolutely ensure that the command should die when we're done
-	ctx, ctxCancel := context.WithCancel(ctx)
 
-	cancel := func() {
-		ctxCancel()
-		_ = stdoutReader.Close()
-		_ = stdoutWriter.Close()
-	}
-
-	cmd := NewCommand(ctx)
+	cmd := gitcmd.NewCommand()
 	cmd.AddArguments("log", "--name-status", "-c", "--format=commit%x00%H %P%x00", "--parents", "--no-renames", "-t", "-z").AddDynamicArguments(head)
 
 	var files []string
@@ -56,27 +44,27 @@ func LogNameStatusRepo(ctx context.Context, repository, head, treepath string, p
 	} else if treepath != "" {
 		files = append(files, treepath)
 	}
+	// Use the :(literal) pathspec magic to handle edge cases with files named like ":file.txt" or "*.jpg"
+	for i, file := range files {
+		files[i] = ":(literal)" + file
+	}
 	cmd.AddDashesAndList(files...)
 
+	stdoutReader, stdoutReaderClose := cmd.MakeStdoutPipe()
+	ctx, ctxCancel := context.WithCancel(ctx)
 	go func() {
-		stderr := strings.Builder{}
-		err := cmd.Run(&RunOpts{
-			Dir:    repository,
-			Stdout: stdoutWriter,
-			Stderr: &stderr,
-		})
-		if err != nil {
-			_ = stdoutWriter.CloseWithError(ConcatenateError(err, (&stderr).String()))
-			return
+		err := cmd.WithDir(repository).RunWithStderr(ctx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("Unable to run git command %v: %v", cmd.LogString(), err)
 		}
-
-		_ = stdoutWriter.Close()
 	}()
 
-	// For simplicities sake we'll us a buffered reader to read from the cat-file --batch
 	bufReader := bufio.NewReaderSize(stdoutReader, 32*1024)
 
-	return bufReader, cancel
+	return bufReader, func() {
+		ctxCancel()
+		stdoutReaderClose()
+	}
 }
 
 // LogNameStatusRepoParser parses a git log raw output from LogRawRepo
@@ -110,15 +98,16 @@ type LogNameStatusCommitData struct {
 // Next returns the next LogStatusCommitData
 func (g *LogNameStatusRepoParser) Next(treepath string, paths2ids map[string]int, changed []bool, maxpathlen int) (*LogNameStatusCommitData, error) {
 	var err error
-	if g.next == nil || len(g.next) == 0 {
+	if len(g.next) == 0 {
 		g.buffull = false
 		g.next, err = g.rd.ReadSlice('\x00')
 		if err != nil {
-			if err == bufio.ErrBufferFull {
+			switch err {
+			case bufio.ErrBufferFull:
 				g.buffull = true
-			} else if err == io.EOF {
-				return nil, nil
-			} else {
+			case io.EOF:
+				return nil, nil //nolint:nilnil // return nil to signal EOF
+			default:
 				return nil, err
 			}
 		}
@@ -128,28 +117,32 @@ func (g *LogNameStatusRepoParser) Next(treepath string, paths2ids map[string]int
 	if bytes.Equal(g.next, []byte("commit\000")) {
 		g.next, err = g.rd.ReadSlice('\x00')
 		if err != nil {
-			if err == bufio.ErrBufferFull {
+			switch err {
+			case bufio.ErrBufferFull:
 				g.buffull = true
-			} else if err == io.EOF {
-				return nil, nil
-			} else {
+			case io.EOF:
+				return nil, nil //nolint:nilnil // return nil to signal EOF
+			default:
 				return nil, err
 			}
 		}
 	}
 
 	// Our "line" must look like: <commitid> SP (<parent> SP) * NUL
-	ret.CommitID = string(g.next[0:40])
-	parents := string(g.next[41:])
+	commitIDs := string(g.next)
 	if g.buffull {
 		more, err := g.rd.ReadString('\x00')
 		if err != nil {
 			return nil, err
 		}
-		parents += more
+		commitIDs += more
 	}
-	parents = parents[:len(parents)-1]
-	ret.ParentIDs = strings.Split(parents, " ")
+	commitIDs = commitIDs[:len(commitIDs)-1]
+	splitIDs := strings.Split(commitIDs, " ")
+	ret.CommitID = splitIDs[0]
+	if len(splitIDs) > 1 {
+		ret.ParentIDs = splitIDs[1:]
+	}
 
 	// now read the next "line"
 	g.buffull = false
@@ -207,11 +200,12 @@ diffloop:
 		}
 		g.next, err = g.rd.ReadSlice('\x00')
 		if err != nil {
-			if err == bufio.ErrBufferFull {
+			switch err {
+			case bufio.ErrBufferFull:
 				g.buffull = true
-			} else if err == io.EOF {
+			case io.EOF:
 				return &ret, nil
-			} else {
+			default:
 				return nil, err
 			}
 		}
@@ -336,10 +330,7 @@ func WalkGitLog(ctx context.Context, repo *Repository, head *Commit, treepath st
 
 	results := make([]string, len(paths))
 	remaining := len(paths)
-	nextRestart := (len(paths) * 3) / 4
-	if nextRestart > 70 {
-		nextRestart = 70
-	}
+	nextRestart := min((len(paths)*3)/4, 70)
 	lastEmptyParent := head.ID.String()
 	commitSinceLastEmptyParent := uint64(0)
 	commitSinceNextRestart := uint64(0)
@@ -370,27 +361,25 @@ heaploop:
 			break heaploop
 		}
 		parentRemaining.Remove(current.CommitID)
-		if current.Paths != nil {
-			for i, found := range current.Paths {
-				if !found {
-					continue
+		for i, found := range current.Paths {
+			if !found {
+				continue
+			}
+			changed[i] = false
+			if results[i] == "" {
+				results[i] = current.CommitID
+				if err := repo.LastCommitCache.Put(headRef, path.Join(treepath, paths[i]), current.CommitID); err != nil {
+					return nil, err
 				}
-				changed[i] = false
-				if results[i] == "" {
-					results[i] = current.CommitID
-					if err := repo.LastCommitCache.Put(headRef, path.Join(treepath, paths[i]), current.CommitID); err != nil {
+				delete(path2idx, paths[i])
+				remaining--
+				if results[0] == "" {
+					results[0] = current.CommitID
+					if err := repo.LastCommitCache.Put(headRef, treepath, current.CommitID); err != nil {
 						return nil, err
 					}
-					delete(path2idx, paths[i])
+					delete(path2idx, "")
 					remaining--
-					if results[0] == "" {
-						results[0] = current.CommitID
-						if err := repo.LastCommitCache.Put(headRef, treepath, current.CommitID); err != nil {
-							return nil, err
-						}
-						delete(path2idx, "")
-						remaining--
-					}
 				}
 			}
 		}

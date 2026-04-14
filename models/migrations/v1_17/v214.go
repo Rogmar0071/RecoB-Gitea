@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_17 //nolint
+package v1_17
 
 import (
 	"xorm.io/xorm"
@@ -18,5 +18,5 @@ func AddAutoMergeTable(x *xorm.Engine) error {
 		CreatedUnix int64      `xorm:"created"`
 	}
 
-	return x.Sync2(&PullAutoMerge{})
+	return x.Sync(&PullAutoMerge{})
 }

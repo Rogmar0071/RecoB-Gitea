@@ -5,49 +5,37 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
-	"strings"
 
-	"code.gitea.io/gitea/models/db"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/auth/webauthn"
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/session"
-	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/web/middleware"
+	user_service "code.gitea.io/gitea/services/user"
 )
+
+type ErrUserAuthMessage string
+
+func (e ErrUserAuthMessage) Error() string {
+	return string(e)
+}
+
+func ErrAsUserAuthMessage(err error) (string, bool) {
+	var msg ErrUserAuthMessage
+	if errors.As(err, &msg) {
+		return msg.Error(), true
+	}
+	return "", false
+}
 
 // Init should be called exactly once when the application starts to allow plugins
 // to allocate necessary resources
 func Init() {
 	webauthn.Init()
-}
-
-// isAttachmentDownload check if request is a file download (GET) with URL to an attachment
-func isAttachmentDownload(req *http.Request) bool {
-	return strings.HasPrefix(req.URL.Path, "/attachments/") && req.Method == "GET"
-}
-
-// isContainerPath checks if the request targets the container endpoint
-func isContainerPath(req *http.Request) bool {
-	return strings.HasPrefix(req.URL.Path, "/v2/")
-}
-
-var (
-	gitRawReleasePathRe = regexp.MustCompile(`^/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/(?:(?:git-(?:(?:upload)|(?:receive))-pack$)|(?:info/refs$)|(?:HEAD$)|(?:objects/)|(?:raw/)|(?:releases/download/))`)
-	lfsPathRe           = regexp.MustCompile(`^/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/info/lfs/`)
-)
-
-func isGitRawReleaseOrLFSPath(req *http.Request) bool {
-	if gitRawReleasePathRe.MatchString(req.URL.Path) {
-		return true
-	}
-	if setting.LFS.StartServer {
-		return lfsPathRe.MatchString(req.URL.Path)
-	}
-	return false
 }
 
 // handleSignIn clears existing session variables and stores new ones for the specified user object
@@ -81,15 +69,14 @@ func handleSignIn(resp http.ResponseWriter, req *http.Request, sess SessionStore
 	// If the user does not have a locale set, we save the current one.
 	if len(user.Language) == 0 {
 		lc := middleware.Locale(resp, req)
-		user.Language = lc.Language()
-		if err := user_model.UpdateUserCols(db.DefaultContext, user, "language"); err != nil {
+		opts := &user_service.UpdateOptions{
+			Language: optional.Some(lc.Language()),
+		}
+		if err := user_service.UpdateUser(req.Context(), user, opts); err != nil {
 			log.Error(fmt.Sprintf("Error updating user language [user: %d, locale: %s]", user.ID, user.Language))
 			return
 		}
 	}
 
 	middleware.SetLocaleCookie(resp, user.Language, 0)
-
-	// Clear whatever CSRF has right now, force to generate a new one
-	middleware.DeleteCSRFCookie(resp)
 }

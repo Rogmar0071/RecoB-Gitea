@@ -6,20 +6,22 @@ package actions
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	auth_model "code.gitea.io/gitea/models/auth"
 	"code.gitea.io/gitea/models/db"
-	"code.gitea.io/gitea/modules/container"
+	"code.gitea.io/gitea/models/unit"
+	"code.gitea.io/gitea/modules/actions/jobparser"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/timeutil"
 	"code.gitea.io/gitea/modules/util"
 
 	runnerv1 "code.gitea.io/actions-proto-go/runner/v1"
-	lru "github.com/hashicorp/golang-lru"
-	"github.com/nektos/act/pkg/jobparser"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"xorm.io/builder"
 )
@@ -34,7 +36,7 @@ type ActionTask struct {
 	RunnerID int64              `xorm:"index"`
 	Status   Status             `xorm:"index"`
 	Started  timeutil.TimeStamp `xorm:"index"`
-	Stopped  timeutil.TimeStamp
+	Stopped  timeutil.TimeStamp `xorm:"index(stopped_log_expired)"`
 
 	RepoID            int64  `xorm:"index"`
 	OwnerID           int64  `xorm:"index"`
@@ -50,20 +52,20 @@ type ActionTask struct {
 	LogInStorage bool       // read log from database or from storage
 	LogLength    int64      // lines count
 	LogSize      int64      // blob size
-	LogIndexes   LogIndexes `xorm:"LONGBLOB"` // line number to offset
-	LogExpired   bool       // files that are too old will be deleted
+	LogIndexes   LogIndexes `xorm:"LONGBLOB"`                   // line number to offset
+	LogExpired   bool       `xorm:"index(stopped_log_expired)"` // files that are too old will be deleted
 
 	Created timeutil.TimeStamp `xorm:"created"`
 	Updated timeutil.TimeStamp `xorm:"updated index"`
 }
 
-var successfulTokenTaskCache *lru.Cache
+var successfulTokenTaskCache *lru.Cache[string, any]
 
 func init() {
 	db.RegisterModel(new(ActionTask), func() error {
 		if setting.SuccessfulTokensCacheSize > 0 {
 			var err error
-			successfulTokenTaskCache, err = lru.New(setting.SuccessfulTokensCacheSize)
+			successfulTokenTaskCache, err = lru.New[string, any](setting.SuccessfulTokensCacheSize)
 			if err != nil {
 				return fmt.Errorf("unable to allocate Task cache: %v", err)
 			}
@@ -75,7 +77,7 @@ func init() {
 }
 
 func (task *ActionTask) Duration() time.Duration {
-	return calculateDuration(task.Started, task.Stopped, task.Status)
+	return calculateDuration(task.Started, task.Stopped, task.Status, task.Updated)
 }
 
 func (task *ActionTask) IsStopped() bool {
@@ -112,7 +114,7 @@ func (task *ActionTask) GetRepoLink() string {
 
 func (task *ActionTask) LoadJob(ctx context.Context) error {
 	if task.Job == nil {
-		job, err := GetRunJobByID(ctx, task.JobID)
+		job, err := GetRunJobByRepoAndID(ctx, task.RepoID, task.JobID)
 		if err != nil {
 			return err
 		}
@@ -214,13 +216,26 @@ func GetRunningTaskByToken(ctx context.Context, token string) (*ActionTask, erro
 	return nil, errNotExist
 }
 
+func makeTaskStepDisplayName(step *jobparser.Step, limit int) (name string) {
+	if step.Name != "" {
+		name = step.Name // the step has an explicit name
+	} else {
+		// for unnamed step, its "String()" method tries to get a display name by its "name", "uses",
+		// "run" or "id" (last fallback), we add the "Run " prefix for unnamed steps for better display
+		// for multi-line "run" scripts, only use the first line to match GitHub's behavior
+		// https://github.com/actions/runner/blob/66800900843747f37591b077091dd2c8cf2c1796/src/Runner.Worker/Handlers/ScriptHandler.cs#L45-L58
+		runStr, _, _ := strings.Cut(strings.TrimSpace(step.Run), "\n")
+		name = "Run " + util.IfZero(strings.TrimSpace(runStr), step.String())
+	}
+	return util.EllipsisDisplayString(name, limit) // database column has a length limit
+}
+
 func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask, bool, error) {
-	dbCtx, commiter, err := db.TxContext(ctx)
+	ctx, committer, err := db.TxContext(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	defer commiter.Close()
-	ctx = dbCtx.WithContext(ctx)
+	defer committer.Close()
 
 	e := db.GetEngine(ctx)
 
@@ -228,24 +243,24 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 	if runner.RepoID != 0 {
 		jobCond = builder.Eq{"repo_id": runner.RepoID}
 	} else if runner.OwnerID != 0 {
-		jobCond = builder.In("repo_id", builder.Select("id").From("repository").Where(builder.Eq{"owner_id": runner.OwnerID}))
+		jobCond = builder.In("repo_id", builder.Select("`repository`.id").From("repository").
+			Join("INNER", "repo_unit", "`repository`.id = `repo_unit`.repo_id").
+			Where(builder.Eq{"`repository`.owner_id": runner.OwnerID, "`repo_unit`.type": unit.TypeActions}))
 	}
 	if jobCond.IsValid() {
 		jobCond = builder.In("run_id", builder.Select("id").From("action_run").Where(jobCond))
 	}
 
 	var jobs []*ActionRunJob
-	if err := e.Where("task_id=? AND status=?", 0, StatusWaiting).And(jobCond).Asc("id").Find(&jobs); err != nil {
+	if err := e.Where("task_id=? AND status=?", 0, StatusWaiting).And(jobCond).Asc("updated", "id").Find(&jobs); err != nil {
 		return nil, false, err
 	}
 
 	// TODO: a more efficient way to filter labels
 	var job *ActionRunJob
-	labels := runner.AgentLabels
-	labels = append(labels, runner.CustomLabels...)
-	log.Trace("runner labels: %v", labels)
+	log.Trace("runner labels: %v", runner.AgentLabels)
 	for _, v := range jobs {
-		if isSubset(labels, v.RunsOn) {
+		if runner.CanMatchLabels(v.RunsOn) {
 			job = v
 			break
 		}
@@ -277,13 +292,9 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 		return nil, false, err
 	}
 
-	var workflowJob *jobparser.Job
-	if gots, err := jobparser.Parse(job.WorkflowPayload); err != nil {
-		return nil, false, fmt.Errorf("parse workflow of job %d: %w", job.ID, err)
-	} else if len(gots) != 1 {
-		return nil, false, fmt.Errorf("workflow of job %d: not signle workflow", job.ID)
-	} else {
-		_, workflowJob = gots[0].Job()
+	workflowJob, err := job.ParseJob()
+	if err != nil {
+		return nil, false, fmt.Errorf("load job %d: %w", job.ID, err)
 	}
 
 	if _, err := e.Insert(task); err != nil {
@@ -291,16 +302,15 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 	}
 
 	task.LogFilename = logFileName(job.Run.Repo.FullName(), task.ID)
-	if _, err := e.ID(task.ID).Cols("log_filename").Update(task); err != nil {
+	if err := UpdateTask(ctx, task, "log_filename"); err != nil {
 		return nil, false, err
 	}
 
 	if len(workflowJob.Steps) > 0 {
 		steps := make([]*ActionTaskStep, len(workflowJob.Steps))
 		for i, v := range workflowJob.Steps {
-			name, _ := util.SplitStringAtByteN(v.String(), 255)
 			steps[i] = &ActionTaskStep{
-				Name:   name,
+				Name:   makeTaskStepDisplayName(v, 255),
 				TaskID: task.ID,
 				Index:  int64(i),
 				RepoID: task.RepoID,
@@ -320,17 +330,9 @@ func CreateTaskForRunner(ctx context.Context, runner *ActionRunner) (*ActionTask
 		return nil, false, nil
 	}
 
-	if job.Run.Status.IsWaiting() {
-		job.Run.Status = StatusRunning
-		job.Run.Started = now
-		if err := UpdateRun(ctx, job.Run, "status", "started"); err != nil {
-			return nil, false, err
-		}
-	}
-
 	task.Job = job
 
-	if err := commiter.Commit(); err != nil {
+	if err := committer.Commit(); err != nil {
 		return nil, false, err
 	}
 
@@ -343,74 +345,88 @@ func UpdateTask(ctx context.Context, task *ActionTask, cols ...string) error {
 		sess.Cols(cols...)
 	}
 	_, err := sess.Update(task)
+
+	// Automatically delete the ephemeral runner if the task is done
+	if err == nil && task.Status.IsDone() && util.SliceContainsString(cols, "status") {
+		return DeleteEphemeralRunner(ctx, task.RunnerID)
+	}
 	return err
 }
 
-func UpdateTaskByState(ctx context.Context, state *runnerv1.TaskState) (*ActionTask, error) {
+// UpdateTaskByState updates the task by the state.
+// It will always update the task if the state is not final, even there is no change.
+// So it will update ActionTask.Updated to avoid the task being judged as a zombie task.
+func UpdateTaskByState(ctx context.Context, runnerID int64, state *runnerv1.TaskState) (*ActionTask, error) {
 	stepStates := map[int64]*runnerv1.StepState{}
 	for _, v := range state.Steps {
 		stepStates[v.Id] = v
 	}
 
-	ctx, commiter, err := db.TxContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer commiter.Close()
+	return db.WithTx2(ctx, func(ctx context.Context) (*ActionTask, error) {
+		e := db.GetEngine(ctx)
 
-	e := db.GetEngine(ctx)
+		task := &ActionTask{}
+		if has, err := e.ID(state.Id).Get(task); err != nil {
+			return nil, err
+		} else if !has {
+			return nil, util.ErrNotExist
+		} else if runnerID != task.RunnerID {
+			return nil, errors.New("invalid runner for task")
+		}
 
-	task := &ActionTask{}
-	if has, err := e.ID(state.Id).Get(task); err != nil {
-		return nil, err
-	} else if !has {
-		return nil, util.ErrNotExist
-	}
+		if task.Status.IsDone() {
+			// the state is final, do nothing
+			return task, nil
+		}
 
-	if state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
-		task.Status = Status(state.Result)
-		task.Stopped = timeutil.TimeStamp(state.StoppedAt.AsTime().Unix())
-		if _, err := UpdateRunJob(ctx, &ActionRunJob{
-			ID:      task.JobID,
-			Status:  task.Status,
-			Stopped: task.Stopped,
-		}, nil); err != nil {
+		// state.Result is not unspecified means the task is finished
+		if state.Result != runnerv1.Result_RESULT_UNSPECIFIED {
+			task.Status = Status(state.Result)
+			task.Stopped = timeutil.TimeStamp(state.StoppedAt.AsTime().Unix())
+			if err := UpdateTask(ctx, task, "status", "stopped"); err != nil {
+				return nil, err
+			}
+			if _, err := UpdateRunJob(ctx, &ActionRunJob{
+				ID:      task.JobID,
+				RepoID:  task.RepoID,
+				Status:  task.Status,
+				Stopped: task.Stopped,
+			}, nil); err != nil {
+				return nil, err
+			}
+		} else {
+			// Force update ActionTask.Updated to avoid the task being judged as a zombie task
+			task.Updated = timeutil.TimeStampNow()
+			if err := UpdateTask(ctx, task, "updated"); err != nil {
+				return nil, err
+			}
+		}
+
+		if err := task.LoadAttributes(ctx); err != nil {
 			return nil, err
 		}
-	}
 
-	if _, err := e.ID(task.ID).Update(task); err != nil {
-		return nil, err
-	}
-
-	if err := task.LoadAttributes(ctx); err != nil {
-		return nil, err
-	}
-
-	for _, step := range task.Steps {
-		var result runnerv1.Result
-		if v, ok := stepStates[step.Index]; ok {
-			result = v.Result
-			step.LogIndex = v.LogIndex
-			step.LogLength = v.LogLength
-			step.Started = convertTimestamp(v.StartedAt)
-			step.Stopped = convertTimestamp(v.StoppedAt)
+		for _, step := range task.Steps {
+			var result runnerv1.Result
+			if v, ok := stepStates[step.Index]; ok {
+				result = v.Result
+				step.LogIndex = v.LogIndex
+				step.LogLength = v.LogLength
+				step.Started = convertTimestamp(v.StartedAt)
+				step.Stopped = convertTimestamp(v.StoppedAt)
+			}
+			if result != runnerv1.Result_RESULT_UNSPECIFIED {
+				step.Status = Status(result)
+			} else if step.Started != 0 {
+				step.Status = StatusRunning
+			}
+			if _, err := e.ID(step.ID).Update(step); err != nil {
+				return nil, err
+			}
 		}
-		if result != runnerv1.Result_RESULT_UNSPECIFIED {
-			step.Status = Status(result)
-		} else if step.Started != 0 {
-			step.Status = StatusRunning
-		}
-		if _, err := e.ID(step.ID).Update(step); err != nil {
-			return nil, err
-		}
-	}
 
-	if err := commiter.Commit(); err != nil {
-		return nil, err
-	}
-
-	return task, nil
+		return task, nil
+	})
 }
 
 func StopTask(ctx context.Context, taskID int64, status Status) error {
@@ -434,13 +450,14 @@ func StopTask(ctx context.Context, taskID int64, status Status) error {
 	task.Stopped = now
 	if _, err := UpdateRunJob(ctx, &ActionRunJob{
 		ID:      task.JobID,
+		RepoID:  task.RepoID,
 		Status:  task.Status,
 		Stopped: task.Stopped,
 	}, nil); err != nil {
 		return err
 	}
 
-	if _, err := e.ID(task.ID).Update(task); err != nil {
+	if err := UpdateTask(ctx, task, "status", "stopped"); err != nil {
 		return err
 	}
 
@@ -464,18 +481,14 @@ func StopTask(ctx context.Context, taskID int64, status Status) error {
 	return nil
 }
 
-func isSubset(set, subset []string) bool {
-	m := make(container.Set[string], len(set))
-	for _, v := range set {
-		m.Add(v)
-	}
+func FindOldTasksToExpire(ctx context.Context, olderThan timeutil.TimeStamp, limit int) ([]*ActionTask, error) {
+	e := db.GetEngine(ctx)
 
-	for _, v := range subset {
-		if !m.Contains(v) {
-			return false
-		}
-	}
-	return true
+	tasks := make([]*ActionTask, 0, limit)
+	// Check "stopped > 0" to avoid deleting tasks that are still running
+	return tasks, e.Where("stopped > 0 AND stopped < ? AND log_expired = ?", olderThan, false).
+		Limit(limit).
+		Find(&tasks)
 }
 
 func convertTimestamp(timestamp *timestamppb.Timestamp) timeutil.TimeStamp {
@@ -486,7 +499,13 @@ func convertTimestamp(timestamp *timestamppb.Timestamp) timeutil.TimeStamp {
 }
 
 func logFileName(repoFullName string, taskID int64) string {
-	return fmt.Sprintf("%s/%02x/%d.log", repoFullName, taskID%256, taskID)
+	ret := fmt.Sprintf("%s/%02x/%d.log", repoFullName, taskID%256, taskID)
+
+	if setting.Actions.LogCompression.IsZstd() {
+		ret += ".zst"
+	}
+
+	return ret
 }
 
 func getTaskIDFromCache(token string) int64 {

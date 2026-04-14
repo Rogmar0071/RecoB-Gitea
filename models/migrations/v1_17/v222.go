@@ -1,10 +1,11 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_17 //nolint
+package v1_17
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"code.gitea.io/gitea/models/migrations/base"
@@ -29,7 +30,7 @@ func DropOldCredentialIDColumn(x *xorm.Engine) error {
 	}
 	if !credentialIDBytesExists {
 		// looks like 221 hasn't properly run
-		return fmt.Errorf("webauthn_credential does not have a credential_id_bytes column... it is not safe to run this migration")
+		return errors.New("webauthn_credential does not have a credential_id_bytes column... it is not safe to run this migration")
 	}
 
 	// Create webauthnCredential table
@@ -49,7 +50,7 @@ func DropOldCredentialIDColumn(x *xorm.Engine) error {
 		CreatedUnix       timeutil.TimeStamp `xorm:"INDEX created"`
 		UpdatedUnix       timeutil.TimeStamp `xorm:"INDEX updated"`
 	}
-	if err := x.Sync2(&webauthnCredential{}); err != nil {
+	if err := x.Sync(&webauthnCredential{}); err != nil {
 		return err
 	}
 

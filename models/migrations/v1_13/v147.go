@@ -1,7 +1,7 @@
 // Copyright 2020 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_13 //nolint
+package v1_13
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -78,7 +78,7 @@ func CreateReviewsForCodeComments(x *xorm.Engine) error {
 		RefIsPull    bool
 	}
 
-	if err := x.Sync2(new(Review), new(Comment)); err != nil {
+	if err := x.Sync(new(Review), new(Comment)); err != nil {
 		return err
 	}
 

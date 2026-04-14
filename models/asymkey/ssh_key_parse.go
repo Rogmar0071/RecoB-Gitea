@@ -10,15 +10,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
-	"os"
-	"strconv"
 	"strings"
 
-	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/modules/log"
-	"code.gitea.io/gitea/modules/process"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util"
 
@@ -94,7 +91,7 @@ func parseKeyString(content string) (string, error) {
 
 			block, _ := pem.Decode([]byte(content))
 			if block == nil {
-				return "", fmt.Errorf("failed to parse PEM block containing the public key")
+				return "", errors.New("failed to parse PEM block containing the public key")
 			}
 			if strings.Contains(block.Type, "PRIVATE") {
 				return "", ErrKeyIsPrivate
@@ -158,10 +155,6 @@ func parseKeyString(content string) (string, error) {
 // CheckPublicKeyString checks if the given public key string is recognized by SSH.
 // It returns the actual public key line on success.
 func CheckPublicKeyString(content string) (_ string, err error) {
-	if setting.SSH.Disabled {
-		return "", db.ErrSSHDisabled{}
-	}
-
 	content, err = parseKeyString(content)
 	if err != nil {
 		return "", err
@@ -179,20 +172,9 @@ func CheckPublicKeyString(content string) (_ string, err error) {
 		return content, nil
 	}
 
-	var (
-		fnName  string
-		keyType string
-		length  int
-	)
-	if setting.SSH.StartBuiltinServer {
-		fnName = "SSHNativeParsePublicKey"
-		keyType, length, err = SSHNativeParsePublicKey(content)
-	} else {
-		fnName = "SSHKeyGenParsePublicKey"
-		keyType, length, err = SSHKeyGenParsePublicKey(content)
-	}
+	keyType, length, err := SSHNativeParsePublicKey(content)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", fnName, err)
+		return "", fmt.Errorf("SSHNativeParsePublicKey: %w", err)
 	}
 	log.Trace("Key info [native: %v]: %s-%d", setting.SSH.StartBuiltinServer, keyType, length)
 
@@ -226,7 +208,7 @@ func SSHNativeParsePublicKey(keyLine string) (string, int, error) {
 
 	// The ssh library can parse the key, so next we find out what key exactly we have.
 	switch pkey.Type() {
-	case ssh.KeyAlgoDSA:
+	case ssh.KeyAlgoDSA: //nolint:staticcheck // it's deprecated
 		rawPub := struct {
 			Name       string
 			P, Q, G, Y *big.Int
@@ -261,52 +243,4 @@ func SSHNativeParsePublicKey(keyLine string) (string, int, error) {
 		return "ed25519-sk", 256, nil
 	}
 	return "", 0, fmt.Errorf("unsupported key length detection for type: %s", pkey.Type())
-}
-
-// writeTmpKeyFile writes key content to a temporary file
-// and returns the name of that file, along with any possible errors.
-func writeTmpKeyFile(content string) (string, error) {
-	tmpFile, err := os.CreateTemp(setting.SSH.KeyTestPath, "gitea_keytest")
-	if err != nil {
-		return "", fmt.Errorf("TempFile: %w", err)
-	}
-	defer tmpFile.Close()
-
-	if _, err = tmpFile.WriteString(content); err != nil {
-		return "", fmt.Errorf("WriteString: %w", err)
-	}
-	return tmpFile.Name(), nil
-}
-
-// SSHKeyGenParsePublicKey extracts key type and length using ssh-keygen.
-func SSHKeyGenParsePublicKey(key string) (string, int, error) {
-	tmpName, err := writeTmpKeyFile(key)
-	if err != nil {
-		return "", 0, fmt.Errorf("writeTmpKeyFile: %w", err)
-	}
-	defer func() {
-		if err := util.Remove(tmpName); err != nil {
-			log.Warn("Unable to remove temporary key file: %s: Error: %v", tmpName, err)
-		}
-	}()
-
-	stdout, stderr, err := process.GetManager().Exec("SSHKeyGenParsePublicKey", setting.SSH.KeygenPath, "-lf", tmpName)
-	if err != nil {
-		return "", 0, fmt.Errorf("fail to parse public key: %s - %s", err, stderr)
-	}
-	if strings.Contains(stdout, "is not a public key file") {
-		return "", 0, ErrKeyUnableVerify{stdout}
-	}
-
-	fields := strings.Split(stdout, " ")
-	if len(fields) < 4 {
-		return "", 0, fmt.Errorf("invalid public key line: %s", stdout)
-	}
-
-	keyType := strings.Trim(fields[len(fields)-1], "()\r\n")
-	length, err := strconv.ParseInt(fields[0], 10, 32)
-	if err != nil {
-		return "", 0, err
-	}
-	return strings.ToLower(keyType), int(length), nil
 }

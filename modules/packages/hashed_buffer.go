@@ -6,6 +6,7 @@ package packages
 import (
 	"io"
 
+	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util/filebuffer"
 )
 
@@ -25,13 +26,20 @@ type HashedBuffer struct {
 	combinedWriter io.Writer
 }
 
-// NewHashedBuffer creates a hashed buffer with a specific maximum memory size
-func NewHashedBuffer(maxMemorySize int) (*HashedBuffer, error) {
-	b, err := filebuffer.New(maxMemorySize)
+const DefaultMemorySize = 32 * 1024 * 1024
+
+// NewHashedBuffer creates a hashed buffer with the default memory size
+func NewHashedBuffer() (*HashedBuffer, error) {
+	return NewHashedBufferWithSize(DefaultMemorySize)
+}
+
+// NewHashedBufferWithSize creates a hashed buffer with a specific memory size
+func NewHashedBufferWithSize(maxMemorySize int) (*HashedBuffer, error) {
+	tempDir, err := setting.AppDataTempDir("package-hashed-buffer").MkdirAllSub("")
 	if err != nil {
 		return nil, err
 	}
-
+	b := filebuffer.New(maxMemorySize, tempDir)
 	hash := NewMultiHasher()
 
 	combinedWriter := io.MultiWriter(b, hash)
@@ -43,9 +51,14 @@ func NewHashedBuffer(maxMemorySize int) (*HashedBuffer, error) {
 	}, nil
 }
 
-// CreateHashedBufferFromReader creates a hashed buffer and copies the provided reader data into it.
-func CreateHashedBufferFromReader(r io.Reader, maxMemorySize int) (*HashedBuffer, error) {
-	b, err := NewHashedBuffer(maxMemorySize)
+// CreateHashedBufferFromReader creates a hashed buffer with the default memory size and copies the provided reader data into it.
+func CreateHashedBufferFromReader(r io.Reader) (*HashedBuffer, error) {
+	return CreateHashedBufferFromReaderWithSize(r, DefaultMemorySize)
+}
+
+// CreateHashedBufferFromReaderWithSize creates a hashed buffer and copies the provided reader data into it.
+func CreateHashedBufferFromReaderWithSize(r io.Reader, maxMemorySize int) (*HashedBuffer, error) {
+	b, err := NewHashedBufferWithSize(maxMemorySize)
 	if err != nil {
 		return nil, err
 	}

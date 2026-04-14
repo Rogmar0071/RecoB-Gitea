@@ -4,81 +4,50 @@
 package public
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
+	"time"
 
+	"code.gitea.io/gitea/modules/assetfs"
 	"code.gitea.io/gitea/modules/container"
 	"code.gitea.io/gitea/modules/httpcache"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/util"
+
+	"github.com/go-chi/cors"
 )
 
-// Options represents the available options to configure the handler.
-type Options struct {
-	Directory   string
-	Prefix      string
-	CorsHandler func(http.Handler) http.Handler
+func CustomAssets() *assetfs.Layer {
+	return assetfs.Local("custom", setting.CustomPath, "public")
 }
 
-// AssetsURLPathPrefix is the path prefix for static asset files
-const AssetsURLPathPrefix = "/assets/"
+func AssetFS() *assetfs.LayeredFS {
+	return assetfs.Layered(CustomAssets(), BuiltinAssets())
+}
 
-// AssetsHandlerFunc implements the static handler for serving custom or original assets.
-func AssetsHandlerFunc(opts *Options) http.HandlerFunc {
-	custPath := filepath.Join(setting.CustomPath, "public")
-	if !filepath.IsAbs(custPath) {
-		custPath = filepath.Join(setting.AppWorkPath, custPath)
-	}
-	if !filepath.IsAbs(opts.Directory) {
-		opts.Directory = filepath.Join(setting.AppWorkPath, opts.Directory)
-	}
-	if !strings.HasSuffix(opts.Prefix, "/") {
-		opts.Prefix += "/"
-	}
+func AssetsCors() func(next http.Handler) http.Handler {
+	// static assets need to be served for external renders (sandboxed)
+	return cors.Handler(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"HEAD", "GET"},
+		MaxAge:         3600 * 24,
+	})
+}
 
+// FileHandlerFunc implements the static handler for serving files in "public" assets
+func FileHandlerFunc() http.HandlerFunc {
+	assetFS := AssetFS()
 	return func(resp http.ResponseWriter, req *http.Request) {
 		if req.Method != "GET" && req.Method != "HEAD" {
-			resp.WriteHeader(http.StatusNotFound)
+			resp.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-
-		file := req.URL.Path
-		file = file[len(opts.Prefix):]
-		if len(file) == 0 {
-			resp.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if strings.Contains(file, "\\") {
-			resp.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		file = "/" + file
-
-		var written bool
-		if opts.CorsHandler != nil {
-			written = true
-			opts.CorsHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				written = false
-			})).ServeHTTP(resp, req)
-		}
-		if written {
-			return
-		}
-
-		// custom files
-		if opts.handle(resp, req, http.Dir(custPath), file) {
-			return
-		}
-
-		// internal files
-		if opts.handle(resp, req, fileSystem(opts.Directory), file) {
-			return
-		}
-
-		resp.WriteHeader(http.StatusNotFound)
+		handleRequest(resp, req, http.FS(assetFS), req.URL.Path)
 	}
 }
 
@@ -86,31 +55,32 @@ func AssetsHandlerFunc(opts *Options) http.HandlerFunc {
 func parseAcceptEncoding(val string) container.Set[string] {
 	parts := strings.Split(val, ";")
 	types := make(container.Set[string])
-	for _, v := range strings.Split(parts[0], ",") {
+	for v := range strings.SplitSeq(parts[0], ",") {
 		types.Add(strings.TrimSpace(v))
 	}
 	return types
 }
 
 // setWellKnownContentType will set the Content-Type if the file is a well-known type.
-// See the comments of detectWellKnownMimeType
+// See the comments of DetectWellKnownMimeType
 func setWellKnownContentType(w http.ResponseWriter, file string) {
-	mimeType := detectWellKnownMimeType(filepath.Ext(file))
+	mimeType := DetectWellKnownMimeType(path.Ext(file))
 	if mimeType != "" {
 		w.Header().Set("Content-Type", mimeType)
 	}
 }
 
-func (opts *Options) handle(w http.ResponseWriter, req *http.Request, fs http.FileSystem, file string) bool {
-	// use clean to keep the file is a valid path with no . or ..
-	f, err := fs.Open(path.Clean(file))
+func handleRequest(w http.ResponseWriter, req *http.Request, fs http.FileSystem, file string) {
+	// actually, fs (http.FileSystem) is designed to be a safe interface, relative paths won't bypass its parent directory, it's also fine to do a clean here
+	f, err := fs.Open(util.PathJoinRelX(file))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Error("[Static] Open %q failed: %v", file, err)
-		return true
+		return
 	}
 	defer f.Close()
 
@@ -118,21 +88,37 @@ func (opts *Options) handle(w http.ResponseWriter, req *http.Request, fs http.Fi
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Error("[Static] %q exists, but fails to open: %v", file, err)
-		return true
+		return
 	}
 
-	// Try to serve index file
+	// need to serve index file? (no at the moment)
 	if fi.IsDir() {
 		w.WriteHeader(http.StatusNotFound)
-		return true
+		return
 	}
 
-	if httpcache.HandleFileETagCache(req, w, fi) {
-		return true
+	servePublicAsset(w, req, fi, fi.ModTime(), f)
+}
+
+// servePublicAsset serve http content
+func servePublicAsset(w http.ResponseWriter, req *http.Request, fi os.FileInfo, modtime time.Time, content io.ReadSeeker) {
+	setWellKnownContentType(w, fi.Name())
+	httpcache.SetCacheControlInHeader(w.Header(), httpcache.CacheControlForPublicStatic())
+	encodings := parseAcceptEncoding(req.Header.Get("Accept-Encoding"))
+	fiEmbedded, _ := fi.(assetfs.EmbeddedFileInfo)
+	if encodings.Contains("gzip") && fiEmbedded != nil {
+		// try to provide gzip content directly from bindata
+		if gzipBytes, ok := fiEmbedded.GetGzipContent(); ok {
+			rdGzip := bytes.NewReader(gzipBytes)
+			// all gzipped static files (from bindata) are managed by Gitea, so we can make sure every file has the correct ext name
+			// then we can get the correct Content-Type, we do not need to do http.DetectContentType on the decompressed data
+			if w.Header().Get("Content-Type") == "" {
+				w.Header().Set("Content-Type", "application/octet-stream")
+			}
+			w.Header().Set("Content-Encoding", "gzip")
+			http.ServeContent(w, req, fi.Name(), modtime, rdGzip)
+			return
+		}
 	}
-
-	setWellKnownContentType(w, file)
-
-	serveContent(w, req, fi, fi.ModTime(), f)
-	return true
+	http.ServeContent(w, req, fi.Name(), modtime, content)
 }

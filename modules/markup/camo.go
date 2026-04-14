@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/util"
 )
 
 // CamoEncode encodes a lnk to fit with the go-camo and camo proxy links. The purposes of camo-proxy are:
@@ -27,7 +26,7 @@ func CamoEncode(link string) string {
 	macSum := b64encode(mac.Sum(nil))
 	encodedURL := b64encode([]byte(link))
 
-	return util.URLJoin(setting.Camo.ServerURL, macSum, encodedURL)
+	return strings.TrimSuffix(setting.Camo.ServerURL, "/") + "/" + macSum + "/" + encodedURL
 }
 
 func b64encode(data []byte) string {
@@ -38,7 +37,7 @@ func camoHandleLink(link string) string {
 	if setting.Camo.Enabled {
 		lnkURL, err := url.Parse(link)
 		if err == nil && lnkURL.IsAbs() && !strings.HasPrefix(link, setting.AppURL) &&
-			(setting.Camo.Allways || lnkURL.Scheme != "https") {
+			(setting.Camo.Always || lnkURL.Scheme != "https") {
 			return CamoEncode(link)
 		}
 	}

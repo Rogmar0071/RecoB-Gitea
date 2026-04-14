@@ -5,12 +5,13 @@
 package user
 
 import (
+	"errors"
 	"net/http"
 
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/context"
 	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/routers/api/v1/utils"
+	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/convert"
 )
 
@@ -23,12 +24,14 @@ func responseAPIUsers(ctx *context.APIContext, users []*user_model.User) {
 }
 
 func listUserFollowers(ctx *context.APIContext, u *user_model.User) {
-	users, count, err := user_model.GetUserFollowers(ctx, u, ctx.Doer, utils.GetListOptions(ctx))
+	listOptions := utils.GetListOptions(ctx)
+	users, count, err := user_model.GetUserFollowers(ctx, u, ctx.Doer, listOptions)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetUserFollowers", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
+	ctx.SetLinkHeader(count, listOptions.PageSize)
 	ctx.SetTotalCountHeader(count)
 	responseAPIUsers(ctx, users)
 }
@@ -66,7 +69,7 @@ func ListFollowers(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of user
+	//   description: username of the user whose followers are to be listed
 	//   type: string
 	//   required: true
 	// - name: page
@@ -80,17 +83,21 @@ func ListFollowers(ctx *context.APIContext) {
 	// responses:
 	//   "200":
 	//     "$ref": "#/responses/UserList"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
 
 	listUserFollowers(ctx, ctx.ContextUser)
 }
 
 func listUserFollowing(ctx *context.APIContext, u *user_model.User) {
-	users, count, err := user_model.GetUserFollowing(ctx, u, ctx.Doer, utils.GetListOptions(ctx))
+	listOptions := utils.GetListOptions(ctx)
+	users, count, err := user_model.GetUserFollowing(ctx, u, ctx.Doer, listOptions)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetUserFollowing", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
+	ctx.SetLinkHeader(count, listOptions.PageSize)
 	ctx.SetTotalCountHeader(count)
 	responseAPIUsers(ctx, users)
 }
@@ -128,7 +135,7 @@ func ListFollowing(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of user
+	//   description: username of the user whose followed users are to be listed
 	//   type: string
 	//   required: true
 	// - name: page
@@ -142,15 +149,17 @@ func ListFollowing(ctx *context.APIContext) {
 	// responses:
 	//   "200":
 	//     "$ref": "#/responses/UserList"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
 
 	listUserFollowing(ctx, ctx.ContextUser)
 }
 
 func checkUserFollowing(ctx *context.APIContext, u *user_model.User, followID int64) {
-	if user_model.IsFollowing(u.ID, followID) {
+	if user_model.IsFollowing(ctx, u.ID, followID) {
 		ctx.Status(http.StatusNoContent)
 	} else {
-		ctx.NotFound()
+		ctx.APIErrorNotFound()
 	}
 }
 
@@ -162,7 +171,7 @@ func CheckMyFollowing(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of followed user
+	//   description: username of the user to check for authenticated followers
 	//   type: string
 	//   required: true
 	// responses:
@@ -182,12 +191,12 @@ func CheckFollowing(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of following user
+	//   description: username of the following user
 	//   type: string
 	//   required: true
 	// - name: target
 	//   in: path
-	//   description: username of followed user
+	//   description: username of the followed user
 	//   type: string
 	//   required: true
 	// responses:
@@ -196,7 +205,7 @@ func CheckFollowing(ctx *context.APIContext) {
 	//   "404":
 	//     "$ref": "#/responses/notFound"
 
-	target := GetUserByParamsName(ctx, ":target")
+	target := GetUserByPathParam(ctx, "target") // FIXME: it is not right to call this function, it should load the "target" directly
 	if ctx.Written() {
 		return
 	}
@@ -211,15 +220,23 @@ func Follow(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of user to follow
+	//   description: username of the user to follow
 	//   type: string
 	//   required: true
 	// responses:
 	//   "204":
 	//     "$ref": "#/responses/empty"
+	//   "403":
+	//     "$ref": "#/responses/forbidden"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
 
-	if err := user_model.FollowUser(ctx.Doer.ID, ctx.ContextUser.ID); err != nil {
-		ctx.Error(http.StatusInternalServerError, "FollowUser", err)
+	if err := user_model.FollowUser(ctx, ctx.Doer, ctx.ContextUser); err != nil {
+		if errors.Is(err, user_model.ErrBlockedUser) {
+			ctx.APIError(http.StatusForbidden, err)
+		} else {
+			ctx.APIErrorInternal(err)
+		}
 		return
 	}
 	ctx.Status(http.StatusNoContent)
@@ -233,15 +250,17 @@ func Unfollow(ctx *context.APIContext) {
 	// parameters:
 	// - name: username
 	//   in: path
-	//   description: username of user to unfollow
+	//   description: username of the user to unfollow
 	//   type: string
 	//   required: true
 	// responses:
 	//   "204":
 	//     "$ref": "#/responses/empty"
+	//   "404":
+	//     "$ref": "#/responses/notFound"
 
-	if err := user_model.UnfollowUser(ctx.Doer.ID, ctx.ContextUser.ID); err != nil {
-		ctx.Error(http.StatusInternalServerError, "UnfollowUser", err)
+	if err := user_model.UnfollowUser(ctx, ctx.Doer.ID, ctx.ContextUser.ID); err != nil {
+		ctx.APIErrorInternal(err)
 		return
 	}
 	ctx.Status(http.StatusNoContent)

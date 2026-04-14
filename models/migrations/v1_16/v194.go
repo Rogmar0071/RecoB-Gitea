@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"fmt"
@@ -14,8 +14,8 @@ func AddBranchProtectionUnprotectedFilesColumn(x *xorm.Engine) error {
 		UnprotectedFilePatterns string `xorm:"TEXT"`
 	}
 
-	if err := x.Sync2(new(ProtectedBranch)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := x.Sync(new(ProtectedBranch)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 	return nil
 }

@@ -7,16 +7,21 @@ import (
 	"net/http"
 	"testing"
 
+	auth_model "code.gitea.io/gitea/models/auth"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
+	api "code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/tests"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAPIReposGitTrees(t *testing.T) {
 	defer tests.PrepareTestEnv(t)()
 	user2 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})         // owner of the repo1 & repo16
-	user3 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 3})         // owner of the repo3
+	org3 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 3})          // owner of the repo3
 	user4 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 4})         // owner of neither repos
 	repo1 := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})   // public repo
 	repo3 := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 3})   // public repo
@@ -28,16 +33,24 @@ func TestAPIReposGitTrees(t *testing.T) {
 
 	// Login as User2.
 	session := loginUser(t, user2.Name)
-	token := getTokenForLoggedInUser(t, session)
+	token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeReadRepository)
 
 	// Test a public repo that anyone can GET the tree of
-	for _, ref := range [...]string{
-		"master",     // Branch
-		repo1TreeSHA, // Tree SHA
-	} {
-		req := NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", user2.Name, repo1.Name, ref)
-		MakeRequest(t, req, http.StatusOK)
-	}
+	_ = MakeRequest(t, NewRequest(t, "GET", "/api/v1/repos/user2/repo1/git/trees/master"), http.StatusOK)
+
+	resp := MakeRequest(t, NewRequest(t, "GET", "/api/v1/repos/user2/repo1/git/trees/62fb502a7172d4453f0322a2cc85bddffa57f07a?per_page=1"), http.StatusOK)
+	var respGitTree api.GitTreeResponse
+	DecodeJSON(t, resp, &respGitTree)
+	assert.True(t, respGitTree.Truncated)
+	require.Len(t, respGitTree.Entries, 1)
+	assert.Equal(t, "File-WoW", respGitTree.Entries[0].Path)
+
+	resp = MakeRequest(t, NewRequest(t, "GET", "/api/v1/repos/user2/repo1/git/trees/62fb502a7172d4453f0322a2cc85bddffa57f07a?page=2&per_page=1"), http.StatusOK)
+	respGitTree = api.GitTreeResponse{}
+	DecodeJSON(t, resp, &respGitTree)
+	assert.False(t, respGitTree.Truncated)
+	require.Len(t, respGitTree.Entries, 1)
+	assert.Equal(t, "README.md", respGitTree.Entries[0].Path)
 
 	// Tests a private repo with no token so will fail
 	for _, ref := range [...]string{
@@ -49,26 +62,28 @@ func TestAPIReposGitTrees(t *testing.T) {
 	}
 
 	// Test using access token for a private repo that the user of the token owns
-	req := NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s?token=%s", user2.Name, repo16.Name, repo16TreeSHA, token)
+	req := NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", user2.Name, repo16.Name, repo16TreeSHA).
+		AddTokenAuth(token)
 	MakeRequest(t, req, http.StatusOK)
 
 	// Test using bad sha
 	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", user2.Name, repo1.Name, badSHA)
 	MakeRequest(t, req, http.StatusBadRequest)
 
-	// Test using org repo "user3/repo3" where user2 is a collaborator
-	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s?token=%s", user3.Name, repo3.Name, repo3TreeSHA, token)
+	// Test using org repo "org3/repo3" where user2 is a collaborator
+	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", org3.Name, repo3.Name, repo3TreeSHA).
+		AddTokenAuth(token)
 	MakeRequest(t, req, http.StatusOK)
 
-	// Test using org repo "user3/repo3" with no user token
-	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", user3.Name, repo3TreeSHA, repo3.Name)
+	// Test using org repo "org3/repo3" with no user token
+	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/%s", org3.Name, repo3TreeSHA, repo3.Name)
 	MakeRequest(t, req, http.StatusNotFound)
 
 	// Login as User4.
 	session = loginUser(t, user4.Name)
-	token4 := getTokenForLoggedInUser(t, session)
+	token4 := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeAll)
 
-	// Test using org repo "user3/repo3" where user4 is a NOT collaborator
-	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/d56a3073c1dbb7b15963110a049d50cdb5db99fc?access=%s", user3.Name, repo3.Name, token4)
+	// Test using org repo "org3/repo3" where user4 is a NOT collaborator
+	req = NewRequestf(t, "GET", "/api/v1/repos/%s/%s/git/trees/d56a3073c1dbb7b15963110a049d50cdb5db99fc?access=%s", org3.Name, repo3.Name, token4)
 	MakeRequest(t, req, http.StatusNotFound)
 }

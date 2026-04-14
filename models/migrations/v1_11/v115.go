@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_11 //nolint
+package v1_11
 
 import (
 	"crypto/md5"
@@ -61,7 +61,7 @@ func RenameExistingUserAvatarName(x *xorm.Engine) error {
 		for _, user := range users {
 			oldAvatar := user.Avatar
 
-			if stat, err := os.Stat(filepath.Join(setting.Avatar.Path, oldAvatar)); err != nil || !stat.Mode().IsRegular() {
+			if stat, err := os.Stat(filepath.Join(setting.Avatar.Storage.Path, oldAvatar)); err != nil || !stat.Mode().IsRegular() {
 				if err == nil {
 					err = fmt.Errorf("Error: \"%s\" is not a regular file", oldAvatar)
 				}
@@ -86,7 +86,7 @@ func RenameExistingUserAvatarName(x *xorm.Engine) error {
 				return fmt.Errorf("[user: %s] user table update: %w", user.LowerName, err)
 			}
 
-			deleteList.Add(filepath.Join(setting.Avatar.Path, oldAvatar))
+			deleteList.Add(filepath.Join(setting.Avatar.Storage.Path, oldAvatar))
 			migrated++
 			select {
 			case <-ticker.C:
@@ -135,7 +135,7 @@ func RenameExistingUserAvatarName(x *xorm.Engine) error {
 // copyOldAvatarToNewLocation copies oldAvatar to newAvatarLocation
 // and returns newAvatar location
 func copyOldAvatarToNewLocation(userID int64, oldAvatar string) (string, error) {
-	fr, err := os.Open(filepath.Join(setting.Avatar.Path, oldAvatar))
+	fr, err := os.Open(filepath.Join(setting.Avatar.Storage.Path, oldAvatar))
 	if err != nil {
 		return "", fmt.Errorf("os.Open: %w", err)
 	}
@@ -146,12 +146,12 @@ func copyOldAvatarToNewLocation(userID int64, oldAvatar string) (string, error) 
 		return "", fmt.Errorf("io.ReadAll: %w", err)
 	}
 
-	newAvatar := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d-%x", userID, md5.Sum(data)))))
+	newAvatar := fmt.Sprintf("%x", md5.Sum(fmt.Appendf(nil, "%d-%x", userID, md5.Sum(data))))
 	if newAvatar == oldAvatar {
 		return newAvatar, nil
 	}
 
-	if err := os.WriteFile(filepath.Join(setting.Avatar.Path, newAvatar), data, 0o666); err != nil {
+	if err := os.WriteFile(filepath.Join(setting.Avatar.Storage.Path, newAvatar), data, 0o666); err != nil {
 		return "", fmt.Errorf("os.WriteFile: %w", err)
 	}
 

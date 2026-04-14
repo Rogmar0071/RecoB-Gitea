@@ -8,10 +8,9 @@ import (
 
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
-	"code.gitea.io/gitea/modules/context"
-	repo_module "code.gitea.io/gitea/modules/repository"
-	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/gitrepo"
 	"code.gitea.io/gitea/routers/api/v1/utils"
+	"code.gitea.io/gitea/services/context"
 	repo_service "code.gitea.io/gitea/services/repository"
 )
 
@@ -45,13 +44,13 @@ func ListUnadoptedRepositories(ctx *context.APIContext) {
 	if listOptions.Page == 0 {
 		listOptions.Page = 1
 	}
-	repoNames, count, err := repo_service.ListUnadoptedRepositories(ctx.FormString("query"), &listOptions)
+	repoNames, count, err := repo_service.ListUnadoptedRepositories(ctx, ctx.FormString("query"), &listOptions)
 	if err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
-	ctx.SetTotalCountHeader(int64(count))
+	ctx.SetTotalCountHeader(count)
 
 	ctx.JSON(http.StatusOK, repoNames)
 }
@@ -81,39 +80,39 @@ func AdoptRepository(ctx *context.APIContext) {
 	//     "$ref": "#/responses/notFound"
 	//   "403":
 	//     "$ref": "#/responses/forbidden"
-	ownerName := ctx.Params(":username")
-	repoName := ctx.Params(":reponame")
+	ownerName := ctx.PathParam("username")
+	repoName := ctx.PathParam("reponame")
 
 	ctxUser, err := user_model.GetUserByName(ctx, ownerName)
 	if err != nil {
 		if user_model.IsErrUserNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 			return
 		}
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
 	// check not a repo
-	has, err := repo_model.IsRepositoryExist(ctx, ctxUser, repoName)
+	has, err := repo_model.IsRepositoryModelExist(ctx, ctxUser, repoName)
 	if err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
-	isDir, err := util.IsDir(repo_model.RepoPath(ctxUser.Name, repoName))
+	exist, err := gitrepo.IsRepositoryExist(ctx, repo_model.StorageRepo(repo_model.RelativePath(ctxUser.Name, repoName)))
 	if err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
-	if has || !isDir {
-		ctx.NotFound()
+	if has || !exist {
+		ctx.APIErrorNotFound()
 		return
 	}
-	if _, err := repo_service.AdoptRepository(ctx.Doer, ctxUser, repo_module.CreateRepoOptions{
+	if _, err := repo_service.AdoptRepository(ctx, ctx.Doer, ctxUser, repo_service.CreateRepoOptions{
 		Name:      repoName,
 		IsPrivate: true,
 	}); err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
@@ -143,37 +142,37 @@ func DeleteUnadoptedRepository(ctx *context.APIContext) {
 	//     "$ref": "#/responses/empty"
 	//   "403":
 	//     "$ref": "#/responses/forbidden"
-	ownerName := ctx.Params(":username")
-	repoName := ctx.Params(":reponame")
+	ownerName := ctx.PathParam("username")
+	repoName := ctx.PathParam("reponame")
 
 	ctxUser, err := user_model.GetUserByName(ctx, ownerName)
 	if err != nil {
 		if user_model.IsErrUserNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 			return
 		}
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
 	// check not a repo
-	has, err := repo_model.IsRepositoryExist(ctx, ctxUser, repoName)
+	has, err := repo_model.IsRepositoryModelExist(ctx, ctxUser, repoName)
 	if err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
-	isDir, err := util.IsDir(repo_model.RepoPath(ctxUser.Name, repoName))
+	exist, err := gitrepo.IsRepositoryExist(ctx, repo_model.StorageRepo(repo_model.RelativePath(ctxUser.Name, repoName)))
 	if err != nil {
-		ctx.InternalServerError(err)
+		ctx.APIErrorInternal(err)
 		return
 	}
-	if has || !isDir {
-		ctx.NotFound()
+	if has || !exist {
+		ctx.APIErrorNotFound()
 		return
 	}
 
-	if err := repo_service.DeleteUnadoptedRepository(ctx.Doer, ctxUser, repoName); err != nil {
-		ctx.InternalServerError(err)
+	if err := repo_service.DeleteUnadoptedRepository(ctx, ctx.Doer, ctxUser, repoName); err != nil {
+		ctx.APIErrorInternal(err)
 		return
 	}
 

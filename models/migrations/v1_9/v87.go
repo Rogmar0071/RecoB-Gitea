@@ -1,7 +1,7 @@
 // Copyright 2019 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_9 //nolint
+package v1_9
 
 import (
 	"xorm.io/xorm"
@@ -13,5 +13,5 @@ func AddAvatarFieldToRepository(x *xorm.Engine) error {
 		Avatar string `xorm:"VARCHAR(64)"`
 	}
 
-	return x.Sync2(new(Repository))
+	return x.Sync(new(Repository))
 }

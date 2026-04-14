@@ -5,23 +5,31 @@ package actions
 
 import (
 	"bytes"
-	"io"
+	"slices"
 	"strings"
 
+	"code.gitea.io/gitea/modules/actions/jobparser"
 	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/modules/glob"
 	"code.gitea.io/gitea/modules/log"
+	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
+	"code.gitea.io/gitea/modules/util"
 	webhook_module "code.gitea.io/gitea/modules/webhook"
 
-	"github.com/gobwas/glob"
-	"github.com/nektos/act/pkg/jobparser"
 	"github.com/nektos/act/pkg/model"
 	"github.com/nektos/act/pkg/workflowpattern"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
+type DetectedWorkflow struct {
+	EntryName    string
+	TriggerEvent *jobparser.Event
+	Content      []byte
+}
+
 func init() {
-	model.OnDecodeNodeError = func(node yaml.Node, out interface{}, err error) {
+	model.OnDecodeNodeError = func(node yaml.Node, out any, err error) {
 		// Log the error instead of panic or fatal.
 		// It will be a big job to refactor act/pkg/model to return decode error,
 		// so we just log the error and return empty value, and improve it later.
@@ -29,21 +37,39 @@ func init() {
 	}
 }
 
-func ListWorkflows(commit *git.Commit) (git.Entries, error) {
-	tree, err := commit.SubTree(".gitea/workflows")
-	if _, ok := err.(git.ErrNotExist); ok {
-		tree, err = commit.SubTree(".github/workflows")
+func IsWorkflow(path string) bool {
+	if (!strings.HasSuffix(path, ".yaml")) && (!strings.HasSuffix(path, ".yml")) {
+		return false
 	}
-	if _, ok := err.(git.ErrNotExist); ok {
-		return nil, nil
+
+	for _, workflowDir := range setting.Actions.WorkflowDirs {
+		if strings.HasPrefix(path, workflowDir+"/") {
+			return true
+		}
 	}
-	if err != nil {
-		return nil, err
+	return false
+}
+
+func ListWorkflows(commit *git.Commit) (string, git.Entries, error) {
+	var tree *git.Tree
+	var err error
+	var workflowDir string
+	for _, workflowDir = range setting.Actions.WorkflowDirs {
+		tree, err = commit.SubTree(workflowDir)
+		if err == nil {
+			break
+		}
+		if !git.IsErrNotExist(err) {
+			return "", nil, err
+		}
+	}
+	if tree == nil {
+		return "", nil, nil
 	}
 
 	entries, err := tree.ListEntriesRecursiveFast()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	ret := make(git.Entries, 0, len(entries))
@@ -52,48 +78,132 @@ func ListWorkflows(commit *git.Commit) (git.Entries, error) {
 			ret = append(ret, entry)
 		}
 	}
-	return ret, nil
+	return workflowDir, ret, nil
 }
 
-func DetectWorkflows(commit *git.Commit, triggedEvent webhook_module.HookEventType, payload api.Payloader) (map[string][]byte, error) {
-	entries, err := ListWorkflows(commit)
+func GetContentFromEntry(entry *git.TreeEntry) ([]byte, error) {
+	f, err := entry.Blob().DataAsync()
 	if err != nil {
 		return nil, err
 	}
+	content, err := util.ReadWithLimit(f, 1024*1024)
+	_ = f.Close()
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
+}
 
-	workflows := make(map[string][]byte, len(entries))
+func GetEventsFromContent(content []byte) ([]*jobparser.Event, error) {
+	workflow, err := model.ReadWorkflow(bytes.NewReader(content))
+	if err != nil {
+		return nil, err
+	}
+	events, err := jobparser.ParseRawOn(&workflow.RawOn)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateWorkflowContent(content); err != nil {
+		return nil, err
+	}
+
+	return events, nil
+}
+
+// ValidateWorkflowContent catches structural errors (e.g. blank lines in run: | blocks)
+// that model.ReadWorkflow alone does not detect.
+func ValidateWorkflowContent(content []byte) error {
+	_, err := jobparser.Parse(content)
+	return err
+}
+
+func DetectWorkflows(
+	gitRepo *git.Repository,
+	commit *git.Commit,
+	triggedEvent webhook_module.HookEventType,
+	payload api.Payloader,
+	detectSchedule bool,
+) ([]*DetectedWorkflow, []*DetectedWorkflow, error) {
+	_, entries, err := ListWorkflows(commit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	workflows := make([]*DetectedWorkflow, 0, len(entries))
+	schedules := make([]*DetectedWorkflow, 0, len(entries))
 	for _, entry := range entries {
-		f, err := entry.Blob().DataAsync()
+		content, err := GetContentFromEntry(entry)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		content, err := io.ReadAll(f)
-		_ = f.Close()
-		if err != nil {
-			return nil, err
-		}
-		workflow, err := model.ReadWorkflow(bytes.NewReader(content))
-		if err != nil {
-			log.Warn("ignore invalid workflow %q: %v", entry.Name(), err)
-			continue
-		}
-		events, err := jobparser.ParseRawOn(&workflow.RawOn)
+
+		// one workflow may have multiple events
+		events, err := GetEventsFromContent(content)
 		if err != nil {
 			log.Warn("ignore invalid workflow %q: %v", entry.Name(), err)
 			continue
 		}
 		for _, evt := range events {
 			log.Trace("detect workflow %q for event %#v matching %q", entry.Name(), evt, triggedEvent)
-			if detectMatched(commit, triggedEvent, payload, evt) {
-				workflows[entry.Name()] = content
+			if evt.IsSchedule() {
+				if detectSchedule {
+					dwf := &DetectedWorkflow{
+						EntryName:    entry.Name(),
+						TriggerEvent: evt,
+						Content:      content,
+					}
+					schedules = append(schedules, dwf)
+				}
+			} else if detectMatched(gitRepo, commit, triggedEvent, payload, evt) {
+				dwf := &DetectedWorkflow{
+					EntryName:    entry.Name(),
+					TriggerEvent: evt,
+					Content:      content,
+				}
+				workflows = append(workflows, dwf)
 			}
 		}
 	}
 
-	return workflows, nil
+	return workflows, schedules, nil
 }
 
-func detectMatched(commit *git.Commit, triggedEvent webhook_module.HookEventType, payload api.Payloader, evt *jobparser.Event) bool {
+func DetectScheduledWorkflows(gitRepo *git.Repository, commit *git.Commit) ([]*DetectedWorkflow, error) {
+	_, entries, err := ListWorkflows(commit)
+	if err != nil {
+		return nil, err
+	}
+
+	wfs := make([]*DetectedWorkflow, 0, len(entries))
+	for _, entry := range entries {
+		content, err := GetContentFromEntry(entry)
+		if err != nil {
+			return nil, err
+		}
+
+		// one workflow may have multiple events
+		events, err := GetEventsFromContent(content)
+		if err != nil {
+			log.Warn("ignore invalid workflow %q: %v", entry.Name(), err)
+			continue
+		}
+		for _, evt := range events {
+			if evt.IsSchedule() {
+				log.Trace("detect scheduled workflow: %q", entry.Name())
+				dwf := &DetectedWorkflow{
+					EntryName:    entry.Name(),
+					TriggerEvent: evt,
+					Content:      content,
+				}
+				wfs = append(wfs, dwf)
+			}
+		}
+	}
+
+	return wfs, nil
+}
+
+func detectMatched(gitRepo *git.Repository, commit *git.Commit, triggedEvent webhook_module.HookEventType, payload api.Payloader, evt *jobparser.Event) bool {
 	if !canGithubEventMatch(evt.Name, triggedEvent) {
 		return false
 	}
@@ -103,9 +213,8 @@ func detectMatched(commit *git.Commit, triggedEvent webhook_module.HookEventType
 		webhook_module.HookEventCreate,
 		webhook_module.HookEventDelete,
 		webhook_module.HookEventFork,
-		// FIXME: `wiki` event should match `gollum` event
-		// See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#gollum
-		webhook_module.HookEventWiki:
+		webhook_module.HookEventWiki,
+		webhook_module.HookEventSchedule:
 		if len(evt.Acts()) != 0 {
 			log.Warn("Ignore unsupported %s event arguments %v", triggedEvent, evt.Acts())
 		}
@@ -121,38 +230,44 @@ func detectMatched(commit *git.Commit, triggedEvent webhook_module.HookEventType
 		webhook_module.HookEventIssueAssign,
 		webhook_module.HookEventIssueLabel,
 		webhook_module.HookEventIssueMilestone:
-		return matchIssuesEvent(commit, payload.(*api.IssuePayload), evt)
+		return matchIssuesEvent(payload.(*api.IssuePayload), evt)
 
 	case // issue_comment
 		webhook_module.HookEventIssueComment,
 		// `pull_request_comment` is same as `issue_comment`
 		// See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request_comment-use-issue_comment
 		webhook_module.HookEventPullRequestComment:
-		return matchIssueCommentEvent(commit, payload.(*api.IssueCommentPayload), evt)
+		return matchIssueCommentEvent(payload.(*api.IssueCommentPayload), evt)
 
 	case // pull_request
 		webhook_module.HookEventPullRequest,
 		webhook_module.HookEventPullRequestSync,
 		webhook_module.HookEventPullRequestAssign,
-		webhook_module.HookEventPullRequestLabel:
-		return matchPullRequestEvent(commit, payload.(*api.PullRequestPayload), evt)
+		webhook_module.HookEventPullRequestLabel,
+		webhook_module.HookEventPullRequestReviewRequest,
+		webhook_module.HookEventPullRequestMilestone:
+		return matchPullRequestEvent(gitRepo, commit, payload.(*api.PullRequestPayload), evt)
 
 	case // pull_request_review
 		webhook_module.HookEventPullRequestReviewApproved,
 		webhook_module.HookEventPullRequestReviewRejected:
-		return matchPullRequestReviewEvent(commit, payload.(*api.PullRequestPayload), evt)
+		return matchPullRequestReviewEvent(payload.(*api.PullRequestPayload), evt)
 
 	case // pull_request_review_comment
 		webhook_module.HookEventPullRequestReviewComment:
-		return matchPullRequestReviewCommentEvent(commit, payload.(*api.PullRequestPayload), evt)
+		return matchPullRequestReviewCommentEvent(payload.(*api.PullRequestPayload), evt)
 
 	case // release
 		webhook_module.HookEventRelease:
-		return matchReleaseEvent(commit, payload.(*api.ReleasePayload), evt)
+		return matchReleaseEvent(payload.(*api.ReleasePayload), evt)
 
 	case // registry_package
 		webhook_module.HookEventPackage:
-		return matchPackageEvent(commit, payload.(*api.PackagePayload), evt)
+		return matchPackageEvent(payload.(*api.PackagePayload), evt)
+
+	case // workflow_run
+		webhook_module.HookEventWorkflowRun:
+		return matchWorkflowRunEvent(payload.(*api.WorkflowRunPayload), evt)
 
 	default:
 		log.Warn("unsupported event %q", triggedEvent)
@@ -182,7 +297,7 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 			if err != nil {
 				break
 			}
-			if !workflowpattern.Skip(patterns, []string{refName.ShortName()}, &workflowpattern.EmptyTraceWriter{}) {
+			if !workflowpattern.Skip(patterns, []string{refName.BranchName()}, &workflowpattern.EmptyTraceWriter{}) {
 				matchTimes++
 			}
 		case "branches-ignore":
@@ -194,7 +309,7 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 			if err != nil {
 				break
 			}
-			if !workflowpattern.Filter(patterns, []string{refName.ShortName()}, &workflowpattern.EmptyTraceWriter{}) {
+			if !workflowpattern.Filter(patterns, []string{refName.BranchName()}, &workflowpattern.EmptyTraceWriter{}) {
 				matchTimes++
 			}
 		case "tags":
@@ -206,7 +321,7 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 			if err != nil {
 				break
 			}
-			if !workflowpattern.Skip(patterns, []string{refName.ShortName()}, &workflowpattern.EmptyTraceWriter{}) {
+			if !workflowpattern.Skip(patterns, []string{refName.TagName()}, &workflowpattern.EmptyTraceWriter{}) {
 				matchTimes++
 			}
 		case "tags-ignore":
@@ -218,10 +333,14 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 			if err != nil {
 				break
 			}
-			if !workflowpattern.Filter(patterns, []string{refName.ShortName()}, &workflowpattern.EmptyTraceWriter{}) {
+			if !workflowpattern.Filter(patterns, []string{refName.TagName()}, &workflowpattern.EmptyTraceWriter{}) {
 				matchTimes++
 			}
 		case "paths":
+			if refName.IsTag() {
+				matchTimes++
+				break
+			}
 			filesChanged, err := commit.GetFilesChangedSinceCommit(pushPayload.Before)
 			if err != nil {
 				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", commit.ID.String(), err)
@@ -235,6 +354,10 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 				}
 			}
 		case "paths-ignore":
+			if refName.IsTag() {
+				matchTimes++
+				break
+			}
 			filesChanged, err := commit.GetFilesChangedSinceCommit(pushPayload.Before)
 			if err != nil {
 				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", commit.ID.String(), err)
@@ -258,7 +381,7 @@ func matchPushEvent(commit *git.Commit, pushPayload *api.PushPayload, evt *jobpa
 	return matchTimes == len(evt.Acts())
 }
 
-func matchIssuesEvent(commit *git.Commit, issuePayload *api.IssuePayload, evt *jobparser.Event) bool {
+func matchIssuesEvent(issuePayload *api.IssuePayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -273,20 +396,28 @@ func matchIssuesEvent(commit *git.Commit, issuePayload *api.IssuePayload, evt *j
 			// Actions with the same name:
 			// opened, edited, closed, reopened, assigned, unassigned, milestoned, demilestoned
 			// Actions need to be converted:
-			// label_updated -> labeled
+			// label_updated -> labeled (when adding) or unlabeled (when removing)
 			// label_cleared -> unlabeled
 			// Unsupported activity types:
 			// deleted, transferred, pinned, unpinned, locked, unlocked
 
-			action := issuePayload.Action
-			switch action {
+			actions := []string{}
+			switch issuePayload.Action {
 			case api.HookIssueLabelUpdated:
-				action = "labeled"
+				if len(issuePayload.Changes.AddedLabels) > 0 {
+					actions = append(actions, "labeled")
+				}
+				if len(issuePayload.Changes.RemovedLabels) > 0 {
+					actions = append(actions, "unlabeled")
+				}
 			case api.HookIssueLabelCleared:
-				action = "unlabeled"
+				actions = append(actions, "unlabeled")
+			default:
+				actions = append(actions, string(issuePayload.Action))
 			}
+
 			for _, val := range vals {
-				if glob.MustCompile(val, '/').Match(string(action)) {
+				if slices.ContainsFunc(actions, glob.MustCompile(val, '/').Match) {
 					matchTimes++
 					break
 				}
@@ -298,7 +429,7 @@ func matchIssuesEvent(commit *git.Commit, issuePayload *api.IssuePayload, evt *j
 	return matchTimes == len(evt.Acts())
 }
 
-func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
+func matchPullRequestEvent(gitRepo *git.Repository, commit *git.Commit, prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
 	acts := evt.Acts()
 	activityTypeMatched := false
 	matchTimes := 0
@@ -310,13 +441,13 @@ func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload
 	} else {
 		// See https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request
 		// Actions with the same name:
-		// opened, edited, closed, reopened, assigned, unassigned
+		// opened, edited, closed, reopened, assigned, unassigned, review_requested, review_request_removed, milestoned, demilestoned
 		// Actions need to be converted:
 		// synchronized -> synchronize
 		// label_updated -> labeled
 		// label_cleared -> unlabeled
 		// Unsupported activity types:
-		// converted_to_draft, ready_for_review, locked, unlocked, review_requested, review_request_removed, auto_merge_enabled, auto_merge_disabled
+		// converted_to_draft, ready_for_review, locked, unlocked, auto_merge_enabled, auto_merge_disabled, enqueued, dequeued
 
 		action := prPayload.Action
 		switch action {
@@ -337,9 +468,24 @@ func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload
 		}
 	}
 
+	var (
+		headCommit = commit
+		err        error
+	)
+	if evt.Name == GithubEventPullRequestTarget && (len(acts["paths"]) > 0 || len(acts["paths-ignore"]) > 0) {
+		headCommit, err = gitRepo.GetCommit(prPayload.PullRequest.Head.Sha)
+		if err != nil {
+			log.Error("GetCommit [ref: %s]: %v", prPayload.PullRequest.Head.Sha, err)
+			return false
+		}
+	}
+
 	// all acts conditions should be satisfied
 	for cond, vals := range acts {
 		switch cond {
+		case "types":
+			// types have been checked
+			continue
 		case "branches":
 			refName := git.RefName(prPayload.PullRequest.Base.Ref)
 			patterns, err := workflowpattern.CompilePatterns(vals...)
@@ -359,9 +505,9 @@ func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload
 				matchTimes++
 			}
 		case "paths":
-			filesChanged, err := commit.GetFilesChangedSinceCommit(prPayload.PullRequest.Base.Ref)
+			filesChanged, err := headCommit.GetFilesChangedSinceCommit(prPayload.PullRequest.MergeBase)
 			if err != nil {
-				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", commit.ID.String(), err)
+				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", headCommit.ID.String(), err)
 			} else {
 				patterns, err := workflowpattern.CompilePatterns(vals...)
 				if err != nil {
@@ -372,9 +518,9 @@ func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload
 				}
 			}
 		case "paths-ignore":
-			filesChanged, err := commit.GetFilesChangedSinceCommit(prPayload.PullRequest.Base.Ref)
+			filesChanged, err := headCommit.GetFilesChangedSinceCommit(prPayload.PullRequest.MergeBase)
 			if err != nil {
-				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", commit.ID.String(), err)
+				log.Error("GetFilesChangedSinceCommit [commit_sha1: %s]: %v", headCommit.ID.String(), err)
 			} else {
 				patterns, err := workflowpattern.CompilePatterns(vals...)
 				if err != nil {
@@ -391,7 +537,7 @@ func matchPullRequestEvent(commit *git.Commit, prPayload *api.PullRequestPayload
 	return activityTypeMatched && matchTimes == len(evt.Acts())
 }
 
-func matchIssueCommentEvent(commit *git.Commit, issueCommentPayload *api.IssueCommentPayload, evt *jobparser.Event) bool {
+func matchIssueCommentEvent(issueCommentPayload *api.IssueCommentPayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -423,7 +569,7 @@ func matchIssueCommentEvent(commit *git.Commit, issueCommentPayload *api.IssueCo
 	return matchTimes == len(evt.Acts())
 }
 
-func matchPullRequestReviewEvent(commit *git.Commit, prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
+func matchPullRequestReviewEvent(prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -450,20 +596,11 @@ func matchPullRequestReviewEvent(commit *git.Commit, prPayload *api.PullRequestP
 				actions = append(actions, "submitted", "edited")
 			}
 
-			matched := false
 			for _, val := range vals {
-				for _, action := range actions {
-					if glob.MustCompile(val, '/').Match(action) {
-						matched = true
-						break
-					}
-				}
-				if matched {
+				if slices.ContainsFunc(actions, glob.MustCompile(val, '/').Match) {
+					matchTimes++
 					break
 				}
-			}
-			if matched {
-				matchTimes++
 			}
 		default:
 			log.Warn("pull request review event unsupported condition %q", cond)
@@ -472,7 +609,7 @@ func matchPullRequestReviewEvent(commit *git.Commit, prPayload *api.PullRequestP
 	return matchTimes == len(evt.Acts())
 }
 
-func matchPullRequestReviewCommentEvent(commit *git.Commit, prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
+func matchPullRequestReviewCommentEvent(prPayload *api.PullRequestPayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -499,20 +636,11 @@ func matchPullRequestReviewCommentEvent(commit *git.Commit, prPayload *api.PullR
 				actions = append(actions, "created", "edited")
 			}
 
-			matched := false
 			for _, val := range vals {
-				for _, action := range actions {
-					if glob.MustCompile(val, '/').Match(action) {
-						matched = true
-						break
-					}
-				}
-				if matched {
+				if slices.ContainsFunc(actions, glob.MustCompile(val, '/').Match) {
+					matchTimes++
 					break
 				}
-			}
-			if matched {
-				matchTimes++
 			}
 		default:
 			log.Warn("pull request review comment event unsupported condition %q", cond)
@@ -521,7 +649,7 @@ func matchPullRequestReviewCommentEvent(commit *git.Commit, prPayload *api.PullR
 	return matchTimes == len(evt.Acts())
 }
 
-func matchReleaseEvent(commit *git.Commit, payload *api.ReleasePayload, evt *jobparser.Event) bool {
+func matchReleaseEvent(payload *api.ReleasePayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -558,7 +686,7 @@ func matchReleaseEvent(commit *git.Commit, payload *api.ReleasePayload, evt *job
 	return matchTimes == len(evt.Acts())
 }
 
-func matchPackageEvent(commit *git.Commit, payload *api.PackagePayload, evt *jobparser.Event) bool {
+func matchPackageEvent(payload *api.PackagePayload, evt *jobparser.Event) bool {
 	// with no special filter parameters
 	if len(evt.Acts()) == 0 {
 		return true
@@ -590,6 +718,56 @@ func matchPackageEvent(commit *git.Commit, payload *api.PackagePayload, evt *job
 			}
 		default:
 			log.Warn("package event unsupported condition %q", cond)
+		}
+	}
+	return matchTimes == len(evt.Acts())
+}
+
+func matchWorkflowRunEvent(payload *api.WorkflowRunPayload, evt *jobparser.Event) bool {
+	// with no special filter parameters
+	if len(evt.Acts()) == 0 {
+		return true
+	}
+
+	matchTimes := 0
+	// all acts conditions should be satisfied
+	for cond, vals := range evt.Acts() {
+		switch cond {
+		case "types":
+			action := payload.Action
+			for _, val := range vals {
+				if glob.MustCompile(val, '/').Match(action) {
+					matchTimes++
+					break
+				}
+			}
+		case "workflows":
+			workflow := payload.Workflow
+			patterns, err := workflowpattern.CompilePatterns(vals...)
+			if err != nil {
+				break
+			}
+			if !workflowpattern.Skip(patterns, []string{workflow.Name}, &workflowpattern.EmptyTraceWriter{}) {
+				matchTimes++
+			}
+		case "branches":
+			patterns, err := workflowpattern.CompilePatterns(vals...)
+			if err != nil {
+				break
+			}
+			if !workflowpattern.Skip(patterns, []string{payload.WorkflowRun.HeadBranch}, &workflowpattern.EmptyTraceWriter{}) {
+				matchTimes++
+			}
+		case "branches-ignore":
+			patterns, err := workflowpattern.CompilePatterns(vals...)
+			if err != nil {
+				break
+			}
+			if !workflowpattern.Filter(patterns, []string{payload.WorkflowRun.HeadBranch}, &workflowpattern.EmptyTraceWriter{}) {
+				matchTimes++
+			}
+		default:
+			log.Warn("workflow run event unsupported condition %q", cond)
 		}
 	}
 	return matchTimes == len(evt.Acts())

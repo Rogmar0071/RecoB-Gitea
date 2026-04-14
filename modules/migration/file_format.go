@@ -12,12 +12,19 @@ import (
 	"code.gitea.io/gitea/modules/json"
 	"code.gitea.io/gitea/modules/log"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
 )
 
+// schemaLoader implements jsonschema.URLLoader
+type schemaLoader struct{}
+
+func (l *schemaLoader) Load(url string) (any, error) {
+	return openSchema(url)
+}
+
 // Load project data from file, with optional validation
-func Load(filename string, data interface{}, validation bool) error {
+func Load(filename string, data any, validation bool) error {
 	isJSON := strings.HasSuffix(filename, ".json")
 
 	bs, err := os.ReadFile(filename)
@@ -34,7 +41,7 @@ func Load(filename string, data interface{}, validation bool) error {
 	return unmarshal(bs, data, isJSON)
 }
 
-func unmarshal(bs []byte, data interface{}, isJSON bool) error {
+func unmarshal(bs []byte, data any, isJSON bool) error {
 	if isJSON {
 		return json.Unmarshal(bs, data)
 	}
@@ -43,12 +50,12 @@ func unmarshal(bs []byte, data interface{}, isJSON bool) error {
 
 func getSchema(filename string) (*jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
-	c.LoadURL = openSchema
+	c.UseLoader(&schemaLoader{})
 	return c.Compile(filename)
 }
 
-func validate(bs []byte, datatype interface{}, isJSON bool) error {
-	var v interface{}
+func validate(bs []byte, datatype any, isJSON bool) error {
+	var v any
 	err := unmarshal(bs, &v, isJSON)
 	if err != nil {
 		return err
@@ -81,11 +88,11 @@ func validate(bs []byte, datatype interface{}, isJSON bool) error {
 	return err
 }
 
-func toStringKeys(val interface{}) (interface{}, error) {
+func toStringKeys(val any) (any, error) {
 	var err error
 	switch val := val.(type) {
-	case map[string]interface{}:
-		m := make(map[string]interface{})
+	case map[string]any:
+		m := make(map[string]any)
 		for k, v := range val {
 			m[k], err = toStringKeys(v)
 			if err != nil {
@@ -93,8 +100,8 @@ func toStringKeys(val interface{}) (interface{}, error) {
 			}
 		}
 		return m, nil
-	case []interface{}:
-		l := make([]interface{}, len(val))
+	case []any:
+		l := make([]any, len(val))
 		for i, v := range val {
 			l[i], err = toStringKeys(v)
 			if err != nil {

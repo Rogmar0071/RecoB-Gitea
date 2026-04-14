@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_16 //nolint
+package v1_16
 
 import (
 	"fmt"
@@ -25,8 +25,8 @@ func AddTableIssueContentHistory(x *xorm.Engine) error {
 
 	sess := x.NewSession()
 	defer sess.Close()
-	if err := sess.Sync2(new(IssueContentHistory)); err != nil {
-		return fmt.Errorf("Sync2: %w", err)
+	if err := sess.Sync(new(IssueContentHistory)); err != nil {
+		return fmt.Errorf("Sync: %w", err)
 	}
 	return sess.Commit()
 }

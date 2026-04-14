@@ -1,7 +1,7 @@
 // Copyright 2021 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_14 //nolint
+package v1_14
 
 import (
 	"crypto/sha256"
@@ -78,14 +78,14 @@ func RecalculateUserEmptyPWD(x *xorm.Engine) (err error) {
 	for start := 0; ; start += batchSize {
 		users := make([]*User, 0, batchSize)
 		if err = sess.Limit(batchSize, start).Where(builder.Neq{"passwd": ""}, 0).Find(&users); err != nil {
-			return
+			return err
 		}
 		if len(users) == 0 {
 			break
 		}
 
 		if err = sess.Begin(); err != nil {
-			return
+			return err
 		}
 
 		for _, user := range users {
@@ -100,7 +100,7 @@ func RecalculateUserEmptyPWD(x *xorm.Engine) (err error) {
 		}
 
 		if err = sess.Commit(); err != nil {
-			return
+			return err
 		}
 	}
 

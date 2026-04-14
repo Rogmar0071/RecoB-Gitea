@@ -4,7 +4,6 @@
 package integration
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,7 +20,6 @@ import (
 	base "code.gitea.io/gitea/modules/migration"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/structs"
-	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/services/migrations"
 
 	"github.com/stretchr/testify/assert"
@@ -44,20 +42,17 @@ func TestDumpRestore(t *testing.T) {
 
 		reponame := "repo1"
 
-		basePath, err := os.MkdirTemp("", reponame)
-		assert.NoError(t, err)
-		defer util.RemoveAll(basePath)
-
+		basePath := t.TempDir()
 		repo := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{Name: reponame})
 		repoOwner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: repo.OwnerID})
 		session := loginUser(t, repoOwner.Name)
-		token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeRepo)
+		token := getTokenForLoggedInUser(t, session, auth_model.AccessTokenScopeWriteIssue, auth_model.AccessTokenScopeWriteRepository, auth_model.AccessTokenScopeReadMisc)
 
 		//
 		// Phase 1: dump repo1 from the Gitea instance to the filesystem
 		//
 
-		ctx := context.Background()
+		ctx := t.Context()
 		opts := migrations.MigrateOptions{
 			GitServiceType: structs.GiteaService,
 			Issues:         true,
@@ -66,10 +61,10 @@ func TestDumpRestore(t *testing.T) {
 			Milestones:     true,
 			Comments:       true,
 			AuthToken:      token,
-			CloneAddr:      repo.CloneLink().HTTPS,
+			CloneAddr:      repo.CloneLinkGeneral(t.Context()).HTTPS,
 			RepoName:       reponame,
 		}
-		err = migrations.DumpRepository(ctx, basePath, repoOwner.Name, opts)
+		err := migrations.DumpRepository(ctx, basePath, repoOwner.Name, opts)
 		assert.NoError(t, err)
 
 		//
@@ -96,7 +91,7 @@ func TestDumpRestore(t *testing.T) {
 		// Phase 3: dump restored from the Gitea instance to the filesystem
 		//
 		opts.RepoName = newreponame
-		opts.CloneAddr = newrepo.CloneLink().HTTPS
+		opts.CloneAddr = newrepo.CloneLinkGeneral(t.Context()).HTTPS
 		err = migrations.DumpRepository(ctx, basePath, repoOwner.Name, opts)
 		assert.NoError(t, err)
 
@@ -121,8 +116,8 @@ type compareDump struct {
 }
 
 type compareField struct {
-	before    interface{}
-	after     interface{}
+	before    any
+	after     any
 	ignore    bool
 	transform func(string) string
 	nested    *compareFields
@@ -183,7 +178,7 @@ func (c *compareDump) assertEquals(repoBefore, repoAfter *repo_model.Repository)
 		}).([]*base.Comment)
 		assert.True(c.t, ok)
 		for _, comment := range comments {
-			assert.EqualValues(c.t, issue.Number, comment.IssueIndex)
+			assert.Equal(c.t, issue.Number, comment.IssueIndex)
 		}
 	}
 
@@ -210,15 +205,15 @@ func (c *compareDump) assertEquals(repoBefore, repoAfter *repo_model.Repository)
 		comments, ok := c.assertEqual(filename, []base.Comment{}, compareFields{}).([]*base.Comment)
 		assert.True(c.t, ok)
 		for _, comment := range comments {
-			assert.EqualValues(c.t, pr.Number, comment.IssueIndex)
+			assert.Equal(c.t, pr.Number, comment.IssueIndex)
 		}
 	}
 }
 
-func (c *compareDump) assertLoadYAMLFiles(beforeFilename, afterFilename string, before, after interface{}) {
+func (c *compareDump) assertLoadYAMLFiles(beforeFilename, afterFilename string, before, after any) {
 	_, beforeErr := os.Stat(beforeFilename)
 	_, afterErr := os.Stat(afterFilename)
-	assert.EqualValues(c.t, errors.Is(beforeErr, os.ErrNotExist), errors.Is(afterErr, os.ErrNotExist))
+	assert.Equal(c.t, errors.Is(beforeErr, os.ErrNotExist), errors.Is(afterErr, os.ErrNotExist))
 	if errors.Is(beforeErr, os.ErrNotExist) {
 		return
 	}
@@ -237,7 +232,7 @@ func (c *compareDump) assertLoadFiles(beforeFilename, afterFilename string, t re
 		//
 		// Given []Something{} create afterPtr, beforePtr []*Something{}
 		//
-		sliceType := reflect.SliceOf(reflect.PtrTo(t.Elem()))
+		sliceType := reflect.SliceOf(reflect.PointerTo(t.Elem()))
 		beforeSlice := reflect.MakeSlice(sliceType, 0, 10)
 		beforePtr = reflect.New(beforeSlice.Type())
 		beforePtr.Elem().Set(beforeSlice)
@@ -255,7 +250,7 @@ func (c *compareDump) assertLoadFiles(beforeFilename, afterFilename string, t re
 	return beforePtr.Elem(), afterPtr.Elem()
 }
 
-func (c *compareDump) assertEqual(filename string, kind interface{}, fields compareFields) (i interface{}) {
+func (c *compareDump) assertEqual(filename string, kind any, fields compareFields) (i any) {
 	beforeFilename := filepath.Join(c.dirBefore, filename)
 	afterFilename := filepath.Join(c.dirAfter, filename)
 
@@ -269,8 +264,8 @@ func (c *compareDump) assertEqual(filename string, kind interface{}, fields comp
 	return i
 }
 
-func (c *compareDump) assertEqualSlices(before, after reflect.Value, fields compareFields) interface{} {
-	assert.EqualValues(c.t, before.Len(), after.Len())
+func (c *compareDump) assertEqualSlices(before, after reflect.Value, fields compareFields) any {
+	assert.Equal(c.t, before.Len(), after.Len())
 	if before.Len() == after.Len() {
 		for i := 0; i < before.Len(); i++ {
 			_ = c.assertEqualValues(
@@ -282,7 +277,7 @@ func (c *compareDump) assertEqualSlices(before, after reflect.Value, fields comp
 	return after.Interface()
 }
 
-func (c *compareDump) assertEqualValues(before, after reflect.Value, fields compareFields) interface{} {
+func (c *compareDump) assertEqualValues(before, after reflect.Value, fields compareFields) any {
 	for _, field := range reflect.VisibleFields(before.Type()) {
 		bf := before.FieldByName(field.Name)
 		bi := bf.Interface()
@@ -303,15 +298,15 @@ func (c *compareDump) assertEqualValues(before, after reflect.Value, fields comp
 				assert.True(c.t, ok)
 				as, ok := ai.(string)
 				assert.True(c.t, ok)
-				assert.EqualValues(c.t, compare.transform(bs), compare.transform(as))
+				assert.Equal(c.t, compare.transform(bs), compare.transform(as))
 				continue
 			}
 			if compare.before != nil && compare.after != nil {
 				//
 				// The fields are expected to have different values
 				//
-				assert.EqualValues(c.t, compare.before, bi)
-				assert.EqualValues(c.t, compare.after, ai)
+				assert.Equal(c.t, compare.before, bi)
+				assert.Equal(c.t, compare.after, ai)
 				continue
 			}
 			if compare.nested != nil {
@@ -322,7 +317,7 @@ func (c *compareDump) assertEqualValues(before, after reflect.Value, fields comp
 				continue
 			}
 		}
-		assert.EqualValues(c.t, bi, ai)
+		assert.Equal(c.t, bi, ai)
 	}
 	return after.Interface()
 }

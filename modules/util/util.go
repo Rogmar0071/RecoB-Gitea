@@ -6,75 +6,15 @@ package util
 import (
 	"bytes"
 	"crypto/rand"
-	"errors"
+	"fmt"
 	"math/big"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
-
-// OptionalBool a boolean that can be "null"
-type OptionalBool byte
-
-const (
-	// OptionalBoolNone a "null" boolean value
-	OptionalBoolNone OptionalBool = iota
-	// OptionalBoolTrue a "true" boolean value
-	OptionalBoolTrue
-	// OptionalBoolFalse a "false" boolean value
-	OptionalBoolFalse
-)
-
-// IsTrue return true if equal to OptionalBoolTrue
-func (o OptionalBool) IsTrue() bool {
-	return o == OptionalBoolTrue
-}
-
-// IsFalse return true if equal to OptionalBoolFalse
-func (o OptionalBool) IsFalse() bool {
-	return o == OptionalBoolFalse
-}
-
-// IsNone return true if equal to OptionalBoolNone
-func (o OptionalBool) IsNone() bool {
-	return o == OptionalBoolNone
-}
-
-// OptionalBoolOf get the corresponding OptionalBool of a bool
-func OptionalBoolOf(b bool) OptionalBool {
-	if b {
-		return OptionalBoolTrue
-	}
-	return OptionalBoolFalse
-}
-
-// OptionalBoolParse get the corresponding OptionalBool of a string using strconv.ParseBool
-func OptionalBoolParse(s string) OptionalBool {
-	b, e := strconv.ParseBool(s)
-	if e != nil {
-		return OptionalBoolNone
-	}
-	return OptionalBoolOf(b)
-}
-
-// Max max of two ints
-func Max(a, b int) int {
-	if a < b {
-		return b
-	}
-	return a
-}
-
-// Min min of two ints
-func Min(a, b int) int {
-	if a > b {
-		return b
-	}
-	return a
-}
 
 // IsEmptyString checks if the provided string is empty
 func IsEmptyString(s string) bool {
@@ -117,29 +57,6 @@ func NormalizeEOL(input []byte) []byte {
 	return tmp[:pos]
 }
 
-// MergeInto merges pairs of values into a "dict"
-func MergeInto(dict map[string]interface{}, values ...interface{}) (map[string]interface{}, error) {
-	for i := 0; i < len(values); i++ {
-		switch key := values[i].(type) {
-		case string:
-			i++
-			if i == len(values) {
-				return nil, errors.New("specify the key for non array values")
-			}
-			dict[key] = values[i]
-		case map[string]interface{}:
-			m := values[i].(map[string]interface{})
-			for i, v := range m {
-				dict[i] = v
-			}
-		default:
-			return nil, errors.New("dict values must be maps")
-		}
-	}
-
-	return dict, nil
-}
-
 // CryptoRandomInt returns a crypto random integer between 0 and limit, inclusive
 func CryptoRandomInt(limit int64) (int64, error) {
 	rInt, err := rand.Int(rand.Reader, big.NewInt(limit))
@@ -174,12 +91,12 @@ func CryptoRandomBytes(length int64) ([]byte, error) {
 	return buf, err
 }
 
-// ToUpperASCII returns s with all ASCII letters mapped to their upper case.
-func ToUpperASCII(s string) string {
+// ToLowerASCII returns s with all ASCII letters mapped to their lower case.
+func ToLowerASCII(s string) string {
 	b := []byte(s)
 	for i, c := range b {
-		if 'a' <= c && c <= 'z' {
-			b[i] -= 'a' - 'A'
+		if 'A' <= c && c <= 'Z' {
+			b[i] += 'a' - 'A'
 		}
 	}
 	return string(b)
@@ -197,40 +114,8 @@ func ToTitleCaseNoLower(s string) string {
 	return cases.Title(language.English, cases.NoLower).String(s)
 }
 
-var (
-	whitespaceOnly    = regexp.MustCompile("(?m)^[ \t]+$")
-	leadingWhitespace = regexp.MustCompile("(?m)(^[ \t]*)(?:[^ \t\n])")
-)
-
-// Dedent removes common indentation of a multi-line string along with whitespace around it
-// Based on https://github.com/lithammer/dedent
-func Dedent(s string) string {
-	var margin string
-
-	s = whitespaceOnly.ReplaceAllString(s, "")
-	indents := leadingWhitespace.FindAllStringSubmatch(s, -1)
-
-	for i, indent := range indents {
-		if i == 0 {
-			margin = indent[1]
-		} else if strings.HasPrefix(indent[1], margin) {
-			continue
-		} else if strings.HasPrefix(margin, indent[1]) {
-			margin = indent[1]
-		} else {
-			margin = ""
-			break
-		}
-	}
-
-	if margin != "" {
-		s = regexp.MustCompile("(?m)^"+margin).ReplaceAllString(s, "")
-	}
-	return strings.TrimSpace(s)
-}
-
-// NumberIntoInt64 transform a given int into int64.
-func NumberIntoInt64(number interface{}) int64 {
+// ToInt64 transform a given int into int64.
+func ToInt64(number any) (int64, error) {
 	var value int64
 	switch v := number.(type) {
 	case int:
@@ -243,6 +128,138 @@ func NumberIntoInt64(number interface{}) int64 {
 		value = int64(v)
 	case int64:
 		value = v
+
+	case uint:
+		value = int64(v)
+	case uint8:
+		value = int64(v)
+	case uint16:
+		value = int64(v)
+	case uint32:
+		value = int64(v)
+	case uint64:
+		value = int64(v)
+
+	case float32:
+		value = int64(v)
+	case float64:
+		value = int64(v)
+
+	case string:
+		var err error
+		if value, err = strconv.ParseInt(v, 10, 64); err != nil {
+			return 0, err
+		}
+	default:
+		return 0, fmt.Errorf("unable to convert %v to int64", number)
 	}
-	return value
+	return value, nil
+}
+
+// ToFloat64 transform a given int into float64.
+func ToFloat64(number any) (float64, error) {
+	var value float64
+	switch v := number.(type) {
+	case int:
+		value = float64(v)
+	case int8:
+		value = float64(v)
+	case int16:
+		value = float64(v)
+	case int32:
+		value = float64(v)
+	case int64:
+		value = float64(v)
+
+	case uint:
+		value = float64(v)
+	case uint8:
+		value = float64(v)
+	case uint16:
+		value = float64(v)
+	case uint32:
+		value = float64(v)
+	case uint64:
+		value = float64(v)
+
+	case float32:
+		value = float64(v)
+	case float64:
+		value = v
+
+	case string:
+		var err error
+		if value, err = strconv.ParseFloat(v, 64); err != nil {
+			return 0, err
+		}
+	default:
+		return 0, fmt.Errorf("unable to convert %v to float64", number)
+	}
+	return value, nil
+}
+
+// Iif is an "inline-if", it returns "trueVal" if "condition" is true, otherwise "falseVal"
+func Iif[T any](condition bool, trueVal, falseVal T) T {
+	if condition {
+		return trueVal
+	}
+	return falseVal
+}
+
+// IfZero returns "def" if "v" is a zero value, otherwise "v"
+func IfZero[T comparable](v, def T) T {
+	var zero T
+	if v == zero {
+		return def
+	}
+	return v
+}
+
+func IfEmpty[T any](v, def []T) []T {
+	if len(v) == 0 {
+		return def
+	}
+	return v
+}
+
+// OptionalArg helps the "optional argument" in Golang:
+//
+//	func foo(optArg ...int) { return OptionalArg(optArg) }
+//		calling `foo()` gets zero value 0, calling `foo(100)` gets 100
+//	func bar(optArg ...int) { return OptionalArg(optArg, 42) }
+//		calling `bar()` gets default value 42, calling `bar(100)` gets 100
+//
+// Passing more than 1 item to `optArg` or `defaultValue` is undefined behavior.
+// At the moment only the first item is used.
+func OptionalArg[T any](optArg []T, defaultValue ...T) (ret T) {
+	if len(optArg) >= 1 {
+		return optArg[0]
+	}
+	if len(defaultValue) >= 1 {
+		return defaultValue[0]
+	}
+	return ret
+}
+
+type EnumConst[T comparable] interface {
+	EnumValues() []T
+}
+
+// EnumValue returns the value if it's in the enum const's values,
+// otherwise returns the first item of enums as default value.
+func EnumValue[T comparable](val EnumConst[T]) (ret T, valid bool) {
+	enums := val.EnumValues()
+	if slices.Contains(enums, val.(T)) {
+		return val.(T), true
+	}
+	return enums[0], false
+}
+
+func ReserveLineBreakForTextarea(input string) string {
+	// Since the content is from a form which is a textarea, the line endings are \r\n.
+	// It's a standard behavior of HTML.
+	// But we want to store them as \n like what GitHub does.
+	// And users are unlikely to really need to keep the \r.
+	// Other than this, we should respect the original content, even leading or trailing spaces.
+	return strings.ReplaceAll(input, "\r\n", "\n")
 }

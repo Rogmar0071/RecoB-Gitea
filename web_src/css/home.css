@@ -2,7 +2,7 @@
   max-width: 220px;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .home .hero h1 {
     font-size: 3.5em;
   }
@@ -21,7 +21,7 @@
 }
 
 .home .hero .svg {
-  color: var(--color-green);
+  color: var(--color-logo);
   height: 40px;
   width: 50px;
   vertical-align: bottom;
@@ -40,46 +40,67 @@
 }
 
 .home a {
-  color: var(--color-green);
+  color: var(--color-logo);
 }
 
-footer {
+.page-footer {
+  display: flex;
+  justify-content: space-between;
   background-color: var(--color-footer);
   border-top: 1px solid var(--color-secondary);
-  line-height: 39px;
-  flex-basis: 40px;
-  color: var(--color-text-light);
-  padding: 0 20px;
+  padding: 8px 20px;
 }
 
-footer .right.links {
+.page-footer .left-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+}
+
+.page-footer .right-links {
   min-width: 180px; /* make sure the menu dropdown doesn't overflow horizontally when language name is short */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 1em;
 }
 
-footer .right.links > * {
+.page-footer .right-links > a {
   border-left: 1px solid var(--color-secondary-dark-1);
-  padding-left: 8px;
-  margin-left: 5px;
+  padding-left: 1em;
 }
 
-footer .right.links > *:first-child {
-  border-left: none;
+/* the theme item is also used for the menu's "default text" display */
+.page-footer .ui.dropdown .theme-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
 }
 
-footer .ui.dropdown.language .menu {
-  height: 500px;
-  max-height: calc(100vh - 60px);
+/* Fomantic UI dropdown "remote items by API" can't change parent "item" element,
+so we use "theme-menu-item" in the "item" and add tooltip to the inner one.
+Then the inner one needs to get padding and parent "item" padding needs to be removed */
+.page-footer .menu.theme-menu > .item {
+  padding: 0 !important;
+}
+
+.page-footer .menu.theme-menu > .item > .theme-menu-item {
+  padding: 11px 16px;
+}
+
+.page-footer .ui.dropdown .menu.language-menu,
+.page-footer .ui.dropdown .menu.theme-menu {
+  max-height: min(500px, calc(100vh - 60px));
   overflow-y: auto;
   margin-bottom: 10px;
 }
 
-
 @media (max-width: 880px) {
-  footer .ui.left,
-  footer .ui.right {
-    width: 100%;
-    display: block;
-    text-align: center;
-    float: none;
+  .page-footer {
+    flex-direction: column;
+    gap: 0.5em;
   }
 }

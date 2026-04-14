@@ -7,10 +7,12 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"code.gitea.io/gitea/modules/log"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -29,7 +31,11 @@ func GetNote(ctx context.Context, repo *Repository, commitID string, note *Note)
 
 	remainingCommitID := commitID
 	path := ""
-	currentTree := notes.Tree.gogitTree
+	currentTree, err := notes.Tree.gogitTreeObject()
+	if err != nil {
+		return fmt.Errorf("unable to get tree object for notes commit %q: %w", notes.ID.String(), err)
+	}
+
 	log.Trace("Found tree with ID %q while searching for git note corresponding to the commit %q", currentTree.Entries[0].Name, commitID)
 	var file *object.File
 	for len(remainingCommitID) > 2 {
@@ -72,7 +78,7 @@ func GetNote(ctx context.Context, repo *Repository, commitID string, note *Note)
 		defer commitGraphFile.Close()
 	}
 
-	commitNode, err := commitNodeIndex.Get(notes.ID)
+	commitNode, err := commitNodeIndex.Get(plumbing.Hash(notes.ID.RawValue()))
 	if err != nil {
 		return err
 	}

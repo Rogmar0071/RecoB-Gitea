@@ -4,11 +4,15 @@
 package charset
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
+	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/test"
 	"code.gitea.io/gitea/modules/translation"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type escapeControlTest struct {
@@ -53,24 +57,24 @@ var escapeControlTests = []escapeControlTest{
 		status: EscapeStatus{},
 	},
 	{
-		name:   "hebrew",
+		name:   "hebrew", // old test was wrong, such text shouldn't be escaped
 		text:   "עד תקופת יוון העתיקה היה העיסוק במתמטיקה תכליתי בלבד: היא שימשה כאוסף של נוסחאות לחישוב קרקע, אוכלוסין וכו'. פריצת הדרך של היוונים, פרט לתרומותיהם הגדולות לידע המתמטי, הייתה בלימוד המתמטיקה כשלעצמה, מתוקף ערכה הרוחני. יחסם של חלק מהיוונים הקדמונים למתמטיקה היה דתי - למשל, הכת שאסף סביבו פיתגורס האמינה כי המתמטיקה היא הבסיס לכל הדברים. היוונים נחשבים ליוצרי מושג ההוכחה המתמטית, וכן לראשונים שעסקו במתמטיקה לשם עצמה, כלומר כתחום מחקרי עיוני ומופשט ולא רק כעזר שימושי. עם זאת, לצדה",
-		result: `עד תקופת <span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">י</span></span><span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ו</span></span><span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ו</span></span><span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ן</span></span> העתיקה היה העיסוק במתמטיקה תכליתי בלבד: היא שימשה כאוסף של נוסחאות לחישוב קרקע, אוכלוסין וכו&#39;. פריצת הדרך של היוונים, פרט לתרומותיהם הגדולות לידע המתמטי, הייתה בלימוד המתמטיקה כשלעצמה, מתוקף ערכה הרוחני. יחסם של חלק מהיוונים הקדמונים למתמטיקה היה דתי - למשל, הכת שאסף סביבו פיתגורס האמינה כי המתמטיקה היא הבסיס לכל הדברים. היוונים נחשבים ליוצרי מושג ההוכחה המתמטית, וכן לראשונים שעסקו במתמטיקה לשם עצמה, כלומר כתחום מחקרי עיוני ומופשט ולא רק כעזר שימושי. עם זאת, לצדה`,
-		status: EscapeStatus{Escaped: true, HasAmbiguous: true},
+		result: "עד תקופת יוון העתיקה היה העיסוק במתמטיקה תכליתי בלבד: היא שימשה כאוסף של נוסחאות לחישוב קרקע, אוכלוסין וכו'. פריצת הדרך של היוונים, פרט לתרומותיהם הגדולות לידע המתמטי, הייתה בלימוד המתמטיקה כשלעצמה, מתוקף ערכה הרוחני. יחסם של חלק מהיוונים הקדמונים למתמטיקה היה דתי - למשל, הכת שאסף סביבו פיתגורס האמינה כי המתמטיקה היא הבסיס לכל הדברים. היוונים נחשבים ליוצרי מושג ההוכחה המתמטית, וכן לראשונים שעסקו במתמטיקה לשם עצמה, כלומר כתחום מחקרי עיוני ומופשט ולא רק כעזר שימושי. עם זאת, לצדה",
+		status: EscapeStatus{},
 	},
 	{
-		name: "more hebrew",
+		name: "more hebrew", // old test was wrong, such text shouldn't be escaped
 		text: `בתקופה מאוחרת יותר, השתמשו היוונים בשיטת סימון מתקדמת יותר, שבה הוצגו המספרים לפי 22 אותיות האלפבית היווני. לסימון המספרים בין 1 ל-9 נקבעו תשע האותיות הראשונות, בתוספת גרש ( ' ) בצד ימין של האות, למעלה; תשע האותיות הבאות ייצגו את העשרות מ-10 עד 90, והבאות את המאות. לסימון הספרות בין 1000 ל-900,000, השתמשו היוונים באותן אותיות, אך הוסיפו לאותיות את הגרש דווקא מצד שמאל של האותיות, למטה. ממיליון ומעלה, כנראה השתמשו היוונים בשני תגים במקום אחד.
 
 			המתמטיקאי הבולט הראשון ביוון העתיקה, ויש האומרים בתולדות האנושות, הוא תאלס (624 לפנה"ס - 546 לפנה"ס בקירוב).[1] לא יהיה זה משולל יסוד להניח שהוא האדם הראשון שהוכיח משפט מתמטי, ולא רק גילה אותו. תאלס הוכיח שישרים מקבילים חותכים מצד אחד של שוקי זווית קטעים בעלי יחסים שווים (משפט תאלס הראשון), שהזווית המונחת על קוטר במעגל היא זווית ישרה (משפט תאלס השני), שהקוטר מחלק את המעגל לשני חלקים שווים, ושזוויות הבסיס במשולש שווה-שוקיים שוות זו לזו. מיוחסות לו גם שיטות למדידת גובהן של הפירמידות בעזרת מדידת צילן ולקביעת מיקומה של ספינה הנראית מן החוף.
 
 			בשנים 582 לפנה"ס עד 496 לפנה"ס, בקירוב, חי מתמטיקאי חשוב במיוחד - פיתגורס. המקורות הראשוניים עליו מועטים, וההיסטוריונים מתקשים להפריד את העובדות משכבת המסתורין והאגדות שנקשרו בו. ידוע שסביבו התקבצה האסכולה הפיתגוראית מעין כת פסבדו-מתמטית שהאמינה ש"הכל מספר", או ליתר דיוק הכל ניתן לכימות, וייחסה למספרים משמעויות מיסטיות. ככל הנראה הפיתגוראים ידעו לבנות את הגופים האפלטוניים, הכירו את הממוצע האריתמטי, הממוצע הגאומטרי והממוצע ההרמוני והגיעו להישגים חשובים נוספים. ניתן לומר שהפיתגוראים גילו את היותו של השורש הריבועי של 2, שהוא גם האלכסון בריבוע שאורך צלעותיו 1, אי רציונלי, אך תגליתם הייתה למעשה רק שהקטעים "חסרי מידה משותפת", ומושג המספר האי רציונלי מאוחר יותר.[2] אזכור ראשון לקיומם של קטעים חסרי מידה משותפת מופיע בדיאלוג "תאיטיטוס" של אפלטון, אך רעיון זה היה מוכר עוד קודם לכן, במאה החמישית לפנה"ס להיפאסוס, בן האסכולה הפיתגוראית, ואולי לפיתגורס עצמו.[3]`,
-		result: `בתקופה מאוחרת יותר, השתמשו היוונים בשיטת סימון מתקדמת יותר, שבה הוצגו המספרים לפי 22 אותיות האלפבית היווני. לסימון המספרים בין 1 ל-9 נקבעו תשע האותיות הראשונות, בתוספת גרש ( &#39; ) בצד ימין של האות, למעלה; תשע האותיות הבאות ייצגו את העשרות מ-10 עד 90, והבאות את המאות. לסימון הספרות בין 1000 ל-900,000, השתמשו היוונים באותן אותיות, אך הוסיפו לאותיות את הגרש דווקא מצד שמאל של האותיות, למטה. ממיליון ומעלה, כנראה השתמשו היוונים בשני תגים במקום אחד.
+		result: `בתקופה מאוחרת יותר, השתמשו היוונים בשיטת סימון מתקדמת יותר, שבה הוצגו המספרים לפי 22 אותיות האלפבית היווני. לסימון המספרים בין 1 ל-9 נקבעו תשע האותיות הראשונות, בתוספת גרש ( ' ) בצד ימין של האות, למעלה; תשע האותיות הבאות ייצגו את העשרות מ-10 עד 90, והבאות את המאות. לסימון הספרות בין 1000 ל-900,000, השתמשו היוונים באותן אותיות, אך הוסיפו לאותיות את הגרש דווקא מצד שמאל של האותיות, למטה. ממיליון ומעלה, כנראה השתמשו היוונים בשני תגים במקום אחד.
 
-			המתמטיקאי הבולט הראשון ביוון העתיקה, ויש האומרים בתולדות האנושות, הוא תאלס (624 לפנה&#34;<span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ס</span></span> - 546 לפנה&#34;<span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ס</span></span> בקירוב).[1] לא יהיה זה משולל יסוד להניח שהוא האדם הראשון שהוכיח משפט מתמטי, ולא רק גילה אותו. תאלס הוכיח שישרים מקבילים חותכים מצד אחד של שוקי זווית קטעים בעלי יחסים שווים (משפט תאלס הראשון), שהזווית המונחת על קוטר במעגל היא זווית ישרה (משפט תאלס השני), שהקוטר מחלק את המעגל לשני חלקים שווים, ושזוויות הבסיס במשולש שווה-שוקיים שוות זו לזו. מיוחסות לו גם שיטות למדידת גובהן של הפירמידות בעזרת מדידת צילן ולקביעת מיקומה של ספינה הנראית מן החוף.
+			המתמטיקאי הבולט הראשון ביוון העתיקה, ויש האומרים בתולדות האנושות, הוא תאלס (624 לפנה"ס - 546 לפנה"ס בקירוב).[1] לא יהיה זה משולל יסוד להניח שהוא האדם הראשון שהוכיח משפט מתמטי, ולא רק גילה אותו. תאלס הוכיח שישרים מקבילים חותכים מצד אחד של שוקי זווית קטעים בעלי יחסים שווים (משפט תאלס הראשון), שהזווית המונחת על קוטר במעגל היא זווית ישרה (משפט תאלס השני), שהקוטר מחלק את המעגל לשני חלקים שווים, ושזוויות הבסיס במשולש שווה-שוקיים שוות זו לזו. מיוחסות לו גם שיטות למדידת גובהן של הפירמידות בעזרת מדידת צילן ולקביעת מיקומה של ספינה הנראית מן החוף.
 
-			בשנים 582 לפנה&#34;<span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ס</span></span> עד 496 לפנה&#34;<span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ס</span></span>, בקירוב, חי מתמטיקאי חשוב במיוחד - פיתגורס. המקורות הראשוניים עליו מועטים, וההיסטוריונים מתקשים להפריד את העובדות משכבת המסתורין והאגדות שנקשרו בו. ידוע שסביבו התקבצה האסכולה הפיתגוראית מעין כת פסבדו-מתמטית שהאמינה ש&#34;הכל מספר&#34;, או ליתר דיוק הכל ניתן לכימות, וייחסה למספרים משמעויות מיסטיות. ככל הנראה הפיתגוראים ידעו לבנות את הגופים האפלטוניים, הכירו את הממוצע האריתמטי, הממוצע הגאומטרי והממוצע ההרמוני והגיעו להישגים חשובים נוספים. ניתן לומר שהפיתגוראים גילו את היותו של השורש הריבועי של 2, שהוא גם האלכסון בריבוע שאורך צלעותיו 1, אי רציונלי, אך תגליתם הייתה למעשה רק שהקטעים &#34;חסרי מידה משותפת&#34;, ומושג המספר האי רציונלי מאוחר יותר.[2] אזכור ראשון לקיומם של קטעים חסרי מידה משותפת מופיע בדיאלוג &#34;תאיטיטוס&#34; של אפלטון, אך רעיון זה היה מוכר עוד קודם לכן, במאה החמישית לפנה&#34;<span class="ambiguous-code-point tooltip" data-content="repo.ambiguous_character"><span class="char">ס</span></span> להיפאסוס, בן האסכולה הפיתגוראית, ואולי לפיתגורס עצמו.[3]`,
-		status: EscapeStatus{Escaped: true, HasAmbiguous: true},
+			בשנים 582 לפנה"ס עד 496 לפנה"ס, בקירוב, חי מתמטיקאי חשוב במיוחד - פיתגורס. המקורות הראשוניים עליו מועטים, וההיסטוריונים מתקשים להפריד את העובדות משכבת המסתורין והאגדות שנקשרו בו. ידוע שסביבו התקבצה האסכולה הפיתגוראית מעין כת פסבדו-מתמטית שהאמינה ש"הכל מספר", או ליתר דיוק הכל ניתן לכימות, וייחסה למספרים משמעויות מיסטיות. ככל הנראה הפיתגוראים ידעו לבנות את הגופים האפלטוניים, הכירו את הממוצע האריתמטי, הממוצע הגאומטרי והממוצע ההרמוני והגיעו להישגים חשובים נוספים. ניתן לומר שהפיתגוראים גילו את היותו של השורש הריבועי של 2, שהוא גם האלכסון בריבוע שאורך צלעותיו 1, אי רציונלי, אך תגליתם הייתה למעשה רק שהקטעים "חסרי מידה משותפת", ומושג המספר האי רציונלי מאוחר יותר.[2] אזכור ראשון לקיומם של קטעים חסרי מידה משותפת מופיע בדיאלוג "תאיטיטוס" של אפלטון, אך רעיון זה היה מוכר עוד קודם לכן, במאה החמישית לפנה"ס להיפאסוס, בן האסכולה הפיתגוראית, ואולי לפיתגורס עצמו.[3]`,
+		status: EscapeStatus{},
 	},
 	{
 		name: "Mixed RTL+LTR",
@@ -107,7 +111,7 @@ then resh (ר), and finally heh (ה) (which should appear leftmost).`,
 	{
 		name:   "CVE testcase",
 		text:   "if access_level != \"user\u202E \u2066// Check if admin\u2069 \u2066\" {",
-		result: `if access_level != &#34;user<span class="escaped-code-point" data-escaped="[U+202E]"><span class="char">` + "\u202e" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>// Check if admin<span class="escaped-code-point" data-escaped="[U+2069]"><span class="char">` + "\u2069" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>&#34; {`,
+		result: `if access_level != "user<span class="escaped-code-point" data-escaped="[U+202E]"><span class="char">` + "\u202e" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>// Check if admin<span class="escaped-code-point" data-escaped="[U+2069]"><span class="char">` + "\u2069" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>" {`,
 		status: EscapeStatus{Escaped: true, HasInvisible: true},
 	},
 	{
@@ -119,7 +123,7 @@ then resh (ר), and finally heh (ה) (which should appear leftmost).`,
 		result: `Many computer programs fail to display bidirectional text correctly.
 			For example, the Hebrew name Sarah ` + "\u2067" + `שרה` + "\u2066\n" +
 			`sin (ש) (which appears rightmost), then resh (ר), and finally heh (ה) (which should appear leftmost).` +
-			"\n" + `if access_level != &#34;user<span class="escaped-code-point" data-escaped="[U+202E]"><span class="char">` + "\u202e" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>// Check if admin<span class="escaped-code-point" data-escaped="[U+2069]"><span class="char">` + "\u2069" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>&#34; {` + "\n",
+			"\n" + `if access_level != "user<span class="escaped-code-point" data-escaped="[U+202E]"><span class="char">` + "\u202e" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>// Check if admin<span class="escaped-code-point" data-escaped="[U+2069]"><span class="char">` + "\u2069" + `</span></span> <span class="escaped-code-point" data-escaped="[U+2066]"><span class="char">` + "\u2066" + `</span></span>" {` + "\n",
 		status: EscapeStatus{Escaped: true, HasInvisible: true},
 	},
 	{
@@ -130,76 +134,79 @@ then resh (ר), and finally heh (ה) (which should appear leftmost).`,
 		result: "\xef\xbb\xbftest",
 		status: EscapeStatus{},
 	},
-}
-
-type nullLocale struct{}
-
-func (nullLocale) Language() string                                                   { return "" }
-func (nullLocale) Tr(key string, _ ...interface{}) string                             { return key }
-func (nullLocale) TrN(cnt interface{}, key1, keyN string, args ...interface{}) string { return "" }
-
-var _ (translation.Locale) = nullLocale{}
-
-func TestEscapeControlString(t *testing.T) {
-	for _, tt := range escapeControlTests {
-		t.Run(tt.name, func(t *testing.T) {
-			status, result := EscapeControlString(tt.text, nullLocale{})
-			if !reflect.DeepEqual(*status, tt.status) {
-				t.Errorf("EscapeControlString() status = %v, wanted= %v", status, tt.status)
-			}
-			if result != tt.result {
-				t.Errorf("EscapeControlString()\nresult= %v,\nwanted= %v", result, tt.result)
-			}
-		})
-	}
+	{
+		name:   "ambiguous",
+		text:   "O𝐾",
+		result: `O<span class="ambiguous-code-point" data-tooltip-content="repo.ambiguous_character:𝐾 [U+1D43E],K [U+004B]"><span class="char">𝐾</span></span>`,
+		status: EscapeStatus{Escaped: true, HasAmbiguous: true},
+	},
 }
 
 func TestEscapeControlReader(t *testing.T) {
-	// lets add some control characters to the tests
-	tests := make([]escapeControlTest, 0, len(escapeControlTests)*3)
-	copy(tests, escapeControlTests)
-
-	// if there is a BOM, we should keep the BOM
-	addPrefix := func(prefix, s string) string {
-		if strings.HasPrefix(s, "\xef\xbb\xbf") {
-			return s[:3] + prefix + s[3:]
-		}
-		return prefix + s
-	}
-	for _, test := range escapeControlTests {
-		test.name += " (+Control)"
-		test.text = addPrefix("\u001E", test.text)
-		test.result = addPrefix(`<span class="escaped-code-point" data-escaped="[U+001E]"><span class="char">`+"\u001e"+`</span></span>`, test.result)
-		test.status.Escaped = true
-		test.status.HasInvisible = true
-		tests = append(tests, test)
-	}
-
-	for _, tt := range tests {
+	for _, tt := range escapeControlTests {
 		t.Run(tt.name, func(t *testing.T) {
-			input := strings.NewReader(tt.text)
 			output := &strings.Builder{}
-			status, err := EscapeControlReader(input, output, nullLocale{})
-			result := output.String()
-			if err != nil {
-				t.Errorf("EscapeControlReader(): err = %v", err)
-			}
-
-			if !reflect.DeepEqual(*status, tt.status) {
-				t.Errorf("EscapeControlReader() status = %v, wanted= %v", status, tt.status)
-			}
-			if result != tt.result {
-				t.Errorf("EscapeControlReader()\nresult= %v,\nwanted= %v", result, tt.result)
-			}
+			status, err := EscapeControlReader(strings.NewReader(tt.text), output, &translation.MockLocale{})
+			assert.NoError(t, err)
+			assert.Equal(t, tt.status, *status)
+			outStr := output.String()
+			assert.Equal(t, tt.result, outStr)
 		})
 	}
 }
 
-func TestEscapeControlReader_panic(t *testing.T) {
-	bs := make([]byte, 0, 20479)
-	bs = append(bs, 'A')
-	for i := 0; i < 6826; i++ {
-		bs = append(bs, []byte("—")...)
+func TestSettingAmbiguousUnicodeDetection(t *testing.T) {
+	defer test.MockVariableValue(&setting.UI.AmbiguousUnicodeDetection, true)()
+	_, out := EscapeControlHTML("a test", &translation.MockLocale{})
+	assert.EqualValues(t, `a<span class="escaped-code-point" data-escaped="[U+00A0]"><span class="char"> </span></span>test`, out)
+	setting.UI.AmbiguousUnicodeDetection = false
+	_, out = EscapeControlHTML("a test", &translation.MockLocale{})
+	assert.EqualValues(t, `a test`, out)
+}
+
+func TestHTMLChunkReader(t *testing.T) {
+	type textPart struct {
+		text  string
+		isTag bool
 	}
-	_, _ = EscapeControlString(string(bs), nullLocale{})
+	testReadChunks := func(t *testing.T, chunkSize int, input string, expected []textPart) {
+		r := &htmlChunkReader{in: strings.NewReader(input), readBuf: make([]byte, 0, chunkSize)}
+		var results []textPart
+		for {
+			parts, partIsTag, err := r.readRunes()
+			if err != nil {
+				break
+			}
+			for i, part := range parts {
+				results = append(results, textPart{string(part), partIsTag[i]})
+			}
+		}
+		assert.Equal(t, expected, results, "chunk size: %d, input: %s", chunkSize, input)
+	}
+
+	testReadChunks(t, 10, "abc<def>ghi", []textPart{
+		{text: "abc", isTag: false},
+		{text: "<def>", isTag: true},
+		{text: "gh", isTag: false},
+		// -- chunk
+		{text: "i", isTag: false},
+	})
+
+	testReadChunks(t, 10, "<abc><def>ghi", []textPart{
+		{text: "<abc>", isTag: true},
+		{text: "<def>", isTag: true},
+		// -- chunk
+		{text: "ghi", isTag: false},
+	})
+
+	rune1, rune2, rune3, rune4 := "A", "é", "啊", "🌞"
+	require.Len(t, rune1, 1)
+	require.Len(t, rune2, 2)
+	require.Len(t, rune3, 3)
+	require.Len(t, rune4, 4)
+	input := "<" + rune1 + rune2 + rune3 + rune4 + ">" + rune1 + rune2 + rune3 + rune4
+	testReadChunks(t, 4, input, []textPart{{"<Aé", true}, {"啊", true}, {"🌞", true}, {">", true}, {"Aé", false}, {"啊", false}, {"🌞", false}})
+	testReadChunks(t, 5, input, []textPart{{"<Aé", true}, {"啊", true}, {"🌞>", true}, {"Aé", false}, {"啊", false}, {"🌞", false}})
+	testReadChunks(t, 6, input, []textPart{{"<Aé", true}, {"啊", true}, {"🌞>", true}, {"A", false}, {"é啊", false}, {"🌞", false}})
+	testReadChunks(t, 7, input, []textPart{{"<Aé啊", true}, {"🌞>", true}, {"A", false}, {"é啊", false}, {"🌞", false}})
 }

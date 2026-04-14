@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # This is an update script for gitea installed via the binary distribution
-# from dl.gitea.io on linux as systemd service. It performs a backup and updates
+# from dl.gitea.com on linux as systemd service. It performs a backup and updates
 # Gitea in place.
 # NOTE: This adds the GPG Signing Key of the Gitea maintainers to the keyring.
 # Depends on: bash, curl, xz, sha256sum. optionally jq, gpg
@@ -9,6 +9,15 @@
 # Examples:
 #   upgrade.sh 1.15.10
 #   giteahome=/opt/gitea giteaconf=$giteahome/app.ini upgrade.sh
+
+# Check if gitea service is running
+if ! pidof gitea &> /dev/null; then
+  echo "Error: gitea is not running."
+  exit 1
+fi
+
+# Continue with rest of the script if gitea is running
+echo "Gitea is running. Continuing with rest of script..."
 
 # apply variables from environment
 : "${giteabin:="/usr/local/bin/gitea"}"
@@ -69,14 +78,14 @@ require curl xz sha256sum "$sudocmd"
 # select version to install
 if [[ -z "${giteaversion:-}" ]]; then
   require jq
-  giteaversion=$(curl --connect-timeout 10 -sL https://dl.gitea.io/gitea/version.json | jq -r .latest.version)
+  giteaversion=$(curl --connect-timeout 10 -sL https://dl.gitea.com/gitea/version.json | jq -r .latest.version)
   echo "Latest available version is $giteaversion"
 fi
 
 # confirm update
 echo "Checking currently installed version..."
 current=$(giteacmd --version | cut -d ' ' -f 3)
-[[ "$current" == "$giteaversion" ]] && echo "$current is already installed, stopping." && exit 1
+[[ "$current" == "$giteaversion" ]] && echo "$current is already installed, stopping." && exit 0
 if [[ -z "${no_confirm:-}"  ]]; then
   echo "Make sure to read the changelog first: https://github.com/go-gitea/gitea/blob/main/CHANGELOG.md"
   echo "Are you ready to update Gitea from ${current} to ${giteaversion}? (y/N)"
@@ -91,7 +100,7 @@ cd "$giteahome" # needed for gitea dump later
 
 # download new binary
 binname="gitea-${giteaversion}-${arch}"
-binurl="https://dl.gitea.io/gitea/${giteaversion}/${binname}.xz"
+binurl="https://dl.gitea.com/gitea/${giteaversion}/${binname}.xz"
 echo "Downloading $binurl..."
 curl --connect-timeout 10 --silent --show-error --fail --location -O "$binurl{,.sha256,.asc}"
 
@@ -99,7 +108,9 @@ curl --connect-timeout 10 --silent --show-error --fail --location -O "$binurl{,.
 sha256sum -c "${binname}.xz.sha256"
 if [[ -z "${ignore_gpg:-}" ]]; then
   require gpg
-  gpg --keyserver keys.openpgp.org --recv 7C9E68152594688862D62AF62D9AE806EC1592E2
+  # try to use curl first, it uses standard tcp 443 port and works better behind strict firewall rules
+  curl -fsSL --connect-timeout 10 "https://keys.openpgp.org/vks/v1/by-fingerprint/7C9E68152594688862D62AF62D9AE806EC1592E2" | gpg --import \
+    || gpg --keyserver keys.openpgp.org --recv 7C9E68152594688862D62AF62D9AE806EC1592E2
   gpg --verify "${binname}.xz.asc" "${binname}.xz" || { echo 'Signature does not match'; exit 1; }
 fi
 rm "${binname}".xz.{sha256,asc}
@@ -118,6 +129,8 @@ echo "Creating backup in $giteahome"
 giteacmd dump $backupopts
 echo "Updating binary at $giteabin"
 cp -f "$giteabin" "$giteabin.bak" && mv -f "$binname" "$giteabin"
+# Restore SELinux context if applicable (e.g. RHEL/Fedora)
+command -v restorecon &>/dev/null && restorecon -v "$giteabin" || true
 $service_start
 $service_status
 

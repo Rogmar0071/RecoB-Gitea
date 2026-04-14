@@ -1,7 +1,7 @@
 // Copyright 2022 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-package v1_18 //nolint
+package v1_18
 
 import (
 	"code.gitea.io/gitea/modules/timeutil"
@@ -21,5 +21,5 @@ func AddTeamInviteTable(x *xorm.Engine) error {
 		UpdatedUnix timeutil.TimeStamp `xorm:"INDEX updated"`
 	}
 
-	return x.Sync2(new(TeamInvite))
+	return x.Sync(new(TeamInvite))
 }

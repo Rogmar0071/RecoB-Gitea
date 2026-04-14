@@ -4,9 +4,8 @@
 package user_test
 
 import (
-	"context"
+	"crypto/rand"
 	"fmt"
-	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -16,30 +15,109 @@ import (
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/auth/password/hash"
+	"code.gitea.io/gitea/modules/container"
+	"code.gitea.io/gitea/modules/optional"
 	"code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/structs"
+	"code.gitea.io/gitea/modules/test"
 	"code.gitea.io/gitea/modules/timeutil"
-	"code.gitea.io/gitea/modules/util"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestIsUsableUsername(t *testing.T) {
+	assert.NoError(t, user_model.IsUsableUsername("a"))
+	assert.NoError(t, user_model.IsUsableUsername("foo.wiki"))
+	assert.NoError(t, user_model.IsUsableUsername("foo.git"))
+
+	assert.Error(t, user_model.IsUsableUsername("a--b"))
+	assert.Error(t, user_model.IsUsableUsername("-1_."))
+	assert.Error(t, user_model.IsUsableUsername(".profile"))
+	assert.Error(t, user_model.IsUsableUsername("-"))
+	assert.Error(t, user_model.IsUsableUsername("🌞"))
+	assert.Error(t, user_model.IsUsableUsername("the..repo"))
+	assert.Error(t, user_model.IsUsableUsername("foo.RSS"))
+	assert.Error(t, user_model.IsUsableUsername("foo.PnG"))
+}
 
 func TestOAuth2Application_LoadUser(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 	app := unittest.AssertExistsAndLoadBean(t, &auth.OAuth2Application{ID: 1})
-	user, err := user_model.GetUserByID(db.DefaultContext, app.UID)
+	user, err := user_model.GetUserByID(t.Context(), app.UID)
 	assert.NoError(t, err)
 	assert.NotNil(t, user)
 }
 
-func TestGetUserEmailsByNames(t *testing.T) {
+func TestUserEmails(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
+	defer test.MockVariableValue(&setting.Service.NoReplyAddress, "NoReply.gitea.internal")()
+	t.Run("GetUserEmailsByNames", func(t *testing.T) {
+		// ignore not active user email
+		assert.ElementsMatch(t, []string{"user8@example.com"}, user_model.GetUserEmailsByNames(t.Context(), []string{"user8", "user9"}))
+		assert.ElementsMatch(t, []string{"user8@example.com", "user5@example.com"}, user_model.GetUserEmailsByNames(t.Context(), []string{"user8", "user5"}))
+		assert.ElementsMatch(t, []string{"user8@example.com"}, user_model.GetUserEmailsByNames(t.Context(), []string{"user8", "org7"}))
+	})
 
-	// ignore none active user email
-	assert.Equal(t, []string{"user8@example.com"}, user_model.GetUserEmailsByNames(db.DefaultContext, []string{"user8", "user9"}))
-	assert.Equal(t, []string{"user8@example.com", "user5@example.com"}, user_model.GetUserEmailsByNames(db.DefaultContext, []string{"user8", "user5"}))
+	cases := []struct {
+		Email string
+		UID   int64
+	}{
+		{"UseR1@example.com", 1},
+		{"user1-2@example.COM", 1},
+		{"USER2@" + setting.Service.NoReplyAddress, 2},
+		{"2+user2@" + setting.Service.NoReplyAddress, 2},
+		{"2+oldUser2UsernameWhichDoesNotMatterForQuery@" + setting.Service.NoReplyAddress, 2},
+		{"99999+badUser@" + setting.Service.NoReplyAddress, 0},
+		{"user4@example.com", 4},
+		{"no-such", 0},
+	}
+	t.Run("GetUsersByEmails", func(t *testing.T) {
+		defer test.MockVariableValue(&setting.Service.NoReplyAddress, "NoReply.gitea.internal")()
+		testGetUserByEmail := func(t *testing.T, email string, uid int64) {
+			m, err := user_model.GetUsersByEmails(t.Context(), []string{email})
+			require.NoError(t, err)
+			user := m.GetByEmail(email)
+			if uid == 0 {
+				require.Nil(t, user)
+				return
+			}
+			require.NotNil(t, user)
+			assert.Equal(t, uid, user.ID)
+		}
+		for _, c := range cases {
+			t.Run(c.Email, func(t *testing.T) {
+				testGetUserByEmail(t, c.Email, c.UID)
+			})
+		}
 
-	assert.Equal(t, []string{"user8@example.com"}, user_model.GetUserEmailsByNames(db.DefaultContext, []string{"user8", "user7"}))
+		t.Run("NoReplyConflict", func(t *testing.T) {
+			setting.Service.NoReplyAddress = "example.com"
+			testGetUserByEmail(t, "user1-2@example.COM", 1)
+		})
+	})
+	t.Run("GetUserByEmail", func(t *testing.T) {
+		testGetUserByEmail := func(t *testing.T, email string, uid int64) {
+			user, err := user_model.GetUserByEmail(t.Context(), email)
+			if uid == 0 {
+				require.Error(t, err)
+				assert.Nil(t, user)
+			} else {
+				require.NotNil(t, user)
+				assert.Equal(t, uid, user.ID)
+			}
+		}
+		for _, c := range cases {
+			t.Run(c.Email, func(t *testing.T) {
+				testGetUserByEmail(t, c.Email, c.UID)
+			})
+		}
+
+		t.Run("NoReplyConflict", func(t *testing.T) {
+			setting.Service.NoReplyAddress = "example.com"
+			testGetUserByEmail(t, "user1-2@example.COM", 1)
+		})
+	})
 }
 
 func TestCanCreateOrganization(t *testing.T) {
@@ -62,69 +140,73 @@ func TestCanCreateOrganization(t *testing.T) {
 
 func TestSearchUsers(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
-	testSuccess := func(opts *user_model.SearchUserOptions, expectedUserOrOrgIDs []int64) {
-		users, _, err := user_model.SearchUsers(opts)
+	testSuccess := func(opts user_model.SearchUserOptions, expectedUserOrOrgIDs []int64) {
+		users, _, err := user_model.SearchUsers(t.Context(), opts)
 		assert.NoError(t, err)
-		if assert.Len(t, users, len(expectedUserOrOrgIDs), opts) {
+		cassText := fmt.Sprintf("ids: %v, opts: %v", expectedUserOrOrgIDs, opts)
+		if assert.Len(t, users, len(expectedUserOrOrgIDs), "case: %s", cassText) {
 			for i, expectedID := range expectedUserOrOrgIDs {
-				assert.EqualValues(t, expectedID, users[i].ID)
+				assert.Equal(t, expectedID, users[i].ID, "case: %s", cassText)
 			}
 		}
 	}
 
 	// test orgs
-	testOrgSuccess := func(opts *user_model.SearchUserOptions, expectedOrgIDs []int64) {
-		opts.Type = user_model.UserTypeOrganization
+	testOrgSuccess := func(opts user_model.SearchUserOptions, expectedOrgIDs []int64) {
+		opts.Types = []user_model.UserType{user_model.UserTypeOrganization}
 		testSuccess(opts, expectedOrgIDs)
 	}
 
-	testOrgSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1, PageSize: 2}},
+	testOrgSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1, PageSize: 2}},
 		[]int64{3, 6})
 
-	testOrgSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 2, PageSize: 2}},
+	testOrgSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 2, PageSize: 2}},
 		[]int64{7, 17})
 
-	testOrgSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 3, PageSize: 2}},
+	testOrgSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 3, PageSize: 2}},
 		[]int64{19, 25})
 
-	testOrgSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 4, PageSize: 2}},
-		[]int64{26})
+	testOrgSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 4, PageSize: 2}},
+		[]int64{26, 41})
 
-	testOrgSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 5, PageSize: 2}},
+	testOrgSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 5, PageSize: 2}},
+		[]int64{42})
+
+	testOrgSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 6, PageSize: 2}},
 		[]int64{})
 
 	// test users
-	testUserSuccess := func(opts *user_model.SearchUserOptions, expectedUserIDs []int64) {
-		opts.Type = user_model.UserTypeIndividual
+	testUserSuccess := func(opts user_model.SearchUserOptions, expectedUserIDs []int64) {
+		opts.Types = []user_model.UserType{user_model.UserTypeIndividual}
 		testSuccess(opts, expectedUserIDs)
 	}
 
-	testUserSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}},
-		[]int64{1, 2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29, 30, 32, 34})
+	testUserSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}},
+		[]int64{1, 2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29, 30, 32, 34, 37, 38, 39, 40})
 
-	testUserSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsActive: util.OptionalBoolFalse},
+	testUserSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsActive: optional.Some(false)},
 		[]int64{9})
 
-	testUserSuccess(&user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}, IsActive: util.OptionalBoolTrue},
-		[]int64{1, 2, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29, 30, 32, 34})
+	testUserSuccess(user_model.SearchUserOptions{OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}, IsActive: optional.Some(true)},
+		[]int64{1, 2, 4, 5, 8, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21, 24, 27, 28, 29, 30, 32, 34, 37, 38, 39, 40})
 
-	testUserSuccess(&user_model.SearchUserOptions{Keyword: "user1", OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}, IsActive: util.OptionalBoolTrue},
+	testUserSuccess(user_model.SearchUserOptions{Keyword: "user1", OrderBy: "id ASC", ListOptions: db.ListOptions{Page: 1}, IsActive: optional.Some(true)},
 		[]int64{1, 10, 11, 12, 13, 14, 15, 16, 18})
 
 	// order by name asc default
-	testUserSuccess(&user_model.SearchUserOptions{Keyword: "user1", ListOptions: db.ListOptions{Page: 1}, IsActive: util.OptionalBoolTrue},
+	testUserSuccess(user_model.SearchUserOptions{Keyword: "user1", ListOptions: db.ListOptions{Page: 1}, IsActive: optional.Some(true)},
 		[]int64{1, 10, 11, 12, 13, 14, 15, 16, 18})
 
-	testUserSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsAdmin: util.OptionalBoolTrue},
+	testUserSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsAdmin: optional.Some(true)},
 		[]int64{1})
 
-	testUserSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsRestricted: util.OptionalBoolTrue},
-		[]int64{29, 30})
+	testUserSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsRestricted: optional.Some(true)},
+		[]int64{29})
 
-	testUserSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsProhibitLogin: util.OptionalBoolTrue},
-		[]int64{30})
+	testUserSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsProhibitLogin: optional.Some(true)},
+		[]int64{37})
 
-	testUserSuccess(&user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsTwoFactorEnabled: util.OptionalBoolTrue},
+	testUserSuccess(user_model.SearchUserOptions{ListOptions: db.ListOptions{Page: 1}, IsTwoFactorEnabled: optional.Some(true)},
 		[]int64{24})
 }
 
@@ -146,20 +228,7 @@ func TestEmailNotificationPreferences(t *testing.T) {
 		{user_model.EmailNotificationsOnMention, 9},
 	} {
 		user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: test.userID})
-		assert.Equal(t, test.expected, user.EmailNotifications())
-
-		// Try all possible settings
-		assert.NoError(t, user_model.SetEmailNotifications(user, user_model.EmailNotificationsEnabled))
-		assert.Equal(t, user_model.EmailNotificationsEnabled, user.EmailNotifications())
-
-		assert.NoError(t, user_model.SetEmailNotifications(user, user_model.EmailNotificationsOnMention))
-		assert.Equal(t, user_model.EmailNotificationsOnMention, user.EmailNotifications())
-
-		assert.NoError(t, user_model.SetEmailNotifications(user, user_model.EmailNotificationsDisabled))
-		assert.Equal(t, user_model.EmailNotificationsDisabled, user.EmailNotifications())
-
-		assert.NoError(t, user_model.SetEmailNotifications(user, user_model.EmailNotificationsAndYourOwn))
-		assert.Equal(t, user_model.EmailNotificationsAndYourOwn, user.EmailNotifications())
+		assert.Equal(t, test.expected, user.EmailNotificationsPreference)
 	}
 }
 
@@ -167,9 +236,9 @@ func TestHashPasswordDeterministic(t *testing.T) {
 	b := make([]byte, 16)
 	u := &user_model.User{}
 	algos := hash.RecommendedHashAlgorithms
-	for j := 0; j < len(algos); j++ {
+	for j := range algos {
 		u.PasswdHashAlgo = algos[j]
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			// generate a random password
 			rand.Read(b)
 			pass := string(b)
@@ -194,14 +263,14 @@ func BenchmarkHashPassword(b *testing.B) {
 	pass := "password1337"
 	u := &user_model.User{Passwd: pass}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		u.SetPassword(pass)
 	}
 }
 
 func TestNewGitSig(t *testing.T) {
 	users := make([]*user_model.User, 0, 20)
-	err := db.GetEngine(db.DefaultContext).Find(&users)
+	err := db.GetEngine(t.Context()).Find(&users)
 	assert.NoError(t, err)
 
 	for _, user := range users {
@@ -209,13 +278,13 @@ func TestNewGitSig(t *testing.T) {
 		assert.NotContains(t, sig.Name, "<")
 		assert.NotContains(t, sig.Name, ">")
 		assert.NotContains(t, sig.Name, "\n")
-		assert.NotEqual(t, len(strings.TrimSpace(sig.Name)), 0)
+		assert.NotEmpty(t, strings.TrimSpace(sig.Name))
 	}
 }
 
 func TestDisplayName(t *testing.T) {
 	users := make([]*user_model.User, 0, 20)
-	err := db.GetEngine(db.DefaultContext).Find(&users)
+	err := db.GetEngine(t.Context()).Find(&users)
 	assert.NoError(t, err)
 
 	for _, user := range users {
@@ -224,7 +293,7 @@ func TestDisplayName(t *testing.T) {
 		if len(strings.TrimSpace(user.FullName)) == 0 {
 			assert.Equal(t, user.Name, displayName)
 		}
-		assert.NotEqual(t, len(strings.TrimSpace(displayName)), 0)
+		assert.NotEmpty(t, strings.TrimSpace(displayName))
 	}
 }
 
@@ -238,7 +307,7 @@ func TestCreateUserInvalidEmail(t *testing.T) {
 		MustChangePassword: false,
 	}
 
-	err := user_model.CreateUser(user)
+	err := user_model.CreateUser(t.Context(), user, &user_model.Meta{})
 	assert.Error(t, err)
 	assert.True(t, user_model.IsErrEmailCharIsNotSupported(err))
 }
@@ -252,7 +321,7 @@ func TestCreateUserEmailAlreadyUsed(t *testing.T) {
 	user.Name = "testuser"
 	user.LowerName = strings.ToLower(user.Name)
 	user.ID = 0
-	err := user_model.CreateUser(user)
+	err := user_model.CreateUser(t.Context(), user, &user_model.Meta{})
 	assert.Error(t, err)
 	assert.True(t, user_model.IsErrEmailAlreadyUsed(err))
 }
@@ -269,10 +338,10 @@ func TestCreateUserCustomTimestamps(t *testing.T) {
 	user.ID = 0
 	user.Email = "unique@example.com"
 	user.CreatedUnix = creationTimestamp
-	err := user_model.CreateUser(user)
+	err := user_model.CreateUser(t.Context(), user, &user_model.Meta{})
 	assert.NoError(t, err)
 
-	fetched, err := user_model.GetUserByID(context.Background(), user.ID)
+	fetched, err := user_model.GetUserByID(t.Context(), user.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, creationTimestamp, fetched.CreatedUnix)
 	assert.Equal(t, creationTimestamp, fetched.UpdatedUnix)
@@ -294,12 +363,12 @@ func TestCreateUserWithoutCustomTimestamps(t *testing.T) {
 	user.Email = "unique@example.com"
 	user.CreatedUnix = 0
 	user.UpdatedUnix = 0
-	err := user_model.CreateUser(user)
+	err := user_model.CreateUser(t.Context(), user, &user_model.Meta{})
 	assert.NoError(t, err)
 
 	timestampEnd := time.Now().Unix()
 
-	fetched, err := user_model.GetUserByID(context.Background(), user.ID)
+	fetched, err := user_model.GetUserByID(t.Context(), user.ID)
 	assert.NoError(t, err)
 
 	assert.LessOrEqual(t, timestampStart, fetched.CreatedUnix)
@@ -313,12 +382,12 @@ func TestGetUserIDsByNames(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
 	// ignore non existing
-	IDs, err := user_model.GetUserIDsByNames(db.DefaultContext, []string{"user1", "user2", "none_existing_user"}, true)
+	IDs, err := user_model.GetUserIDsByNames(t.Context(), []string{"user1", "user2", "none_existing_user"}, true)
 	assert.NoError(t, err)
 	assert.Equal(t, []int64{1, 2}, IDs)
 
 	// ignore non existing
-	IDs, err = user_model.GetUserIDsByNames(db.DefaultContext, []string{"user1", "do_not_exist"}, false)
+	IDs, err = user_model.GetUserIDsByNames(t.Context(), []string{"user1", "do_not_exist"}, false)
 	assert.Error(t, err)
 	assert.Equal(t, []int64(nil), IDs)
 }
@@ -326,56 +395,20 @@ func TestGetUserIDsByNames(t *testing.T) {
 func TestGetMaileableUsersByIDs(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
-	results, err := user_model.GetMaileableUsersByIDs(db.DefaultContext, []int64{1, 4}, false)
+	results, err := user_model.GetMailableUsersByIDs(t.Context(), []int64{1, 4}, false)
 	assert.NoError(t, err)
 	assert.Len(t, results, 1)
 	if len(results) > 1 {
-		assert.Equal(t, results[0].ID, 1)
+		assert.Equal(t, 1, results[0].ID)
 	}
 
-	results, err = user_model.GetMaileableUsersByIDs(db.DefaultContext, []int64{1, 4}, true)
+	results, err = user_model.GetMailableUsersByIDs(t.Context(), []int64{1, 4}, true)
 	assert.NoError(t, err)
 	assert.Len(t, results, 2)
 	if len(results) > 2 {
-		assert.Equal(t, results[0].ID, 1)
-		assert.Equal(t, results[1].ID, 4)
+		assert.Equal(t, 1, results[0].ID)
+		assert.Equal(t, 4, results[1].ID)
 	}
-}
-
-func TestUpdateUser(t *testing.T) {
-	assert.NoError(t, unittest.PrepareTestDatabase())
-	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-
-	user.KeepActivityPrivate = true
-	assert.NoError(t, user_model.UpdateUser(db.DefaultContext, user, false))
-	user = unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-	assert.True(t, user.KeepActivityPrivate)
-
-	setting.Service.AllowedUserVisibilityModesSlice = []bool{true, false, false}
-	user.KeepActivityPrivate = false
-	user.Visibility = structs.VisibleTypePrivate
-	assert.Error(t, user_model.UpdateUser(db.DefaultContext, user, false))
-	user = unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-	assert.True(t, user.KeepActivityPrivate)
-
-	newEmail := "new_" + user.Email
-	user.Email = newEmail
-	assert.NoError(t, user_model.UpdateUser(db.DefaultContext, user, true))
-	user = unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-	assert.Equal(t, newEmail, user.Email)
-
-	user.Email = "no mail@mail.org"
-	assert.Error(t, user_model.UpdateUser(db.DefaultContext, user, true))
-}
-
-func TestUpdateUserEmailAlreadyUsed(t *testing.T) {
-	assert.NoError(t, unittest.PrepareTestDatabase())
-	user2 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-	user3 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 3})
-
-	user2.Email = user3.Email
-	err := user_model.UpdateUser(db.DefaultContext, user2, true)
-	assert.True(t, user_model.IsErrEmailAlreadyUsed(err))
 }
 
 func TestNewUserRedirect(t *testing.T) {
@@ -383,7 +416,7 @@ func TestNewUserRedirect(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
 	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 1})
-	assert.NoError(t, user_model.NewUserRedirect(db.DefaultContext, user.ID, user.Name, "newusername"))
+	assert.NoError(t, user_model.NewUserRedirect(t.Context(), user.ID, user.Name, "newusername"))
 
 	unittest.AssertExistsAndLoadBean(t, &user_model.Redirect{
 		LowerName:      user.LowerName,
@@ -400,7 +433,7 @@ func TestNewUserRedirect2(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
 	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 1})
-	assert.NoError(t, user_model.NewUserRedirect(db.DefaultContext, user.ID, user.Name, "olduser1"))
+	assert.NoError(t, user_model.NewUserRedirect(t.Context(), user.ID, user.Name, "olduser1"))
 
 	unittest.AssertExistsAndLoadBean(t, &user_model.Redirect{
 		LowerName:      user.LowerName,
@@ -417,7 +450,7 @@ func TestNewUserRedirect3(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
 	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
-	assert.NoError(t, user_model.NewUserRedirect(db.DefaultContext, user.ID, user.Name, "newusername"))
+	assert.NoError(t, user_model.NewUserRedirect(t.Context(), user.ID, user.Name, "newusername"))
 
 	unittest.AssertExistsAndLoadBean(t, &user_model.Redirect{
 		LowerName:      user.LowerName,
@@ -428,17 +461,17 @@ func TestNewUserRedirect3(t *testing.T) {
 func TestGetUserByOpenID(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
-	_, err := user_model.GetUserByOpenID("https://unknown")
+	_, err := user_model.GetUserByOpenID(t.Context(), "https://unknown")
 	if assert.Error(t, err) {
 		assert.True(t, user_model.IsErrUserNotExist(err))
 	}
 
-	user, err := user_model.GetUserByOpenID("https://user1.domain1.tld")
+	user, err := user_model.GetUserByOpenID(t.Context(), "https://user1.domain1.tld")
 	if assert.NoError(t, err) {
 		assert.Equal(t, int64(1), user.ID)
 	}
 
-	user, err = user_model.GetUserByOpenID("https://domain1.tld/user2/")
+	user, err = user_model.GetUserByOpenID(t.Context(), "https://domain1.tld/user2/")
 	if assert.NoError(t, err) {
 		assert.Equal(t, int64(2), user.ID)
 	}
@@ -447,14 +480,19 @@ func TestGetUserByOpenID(t *testing.T) {
 func TestFollowUser(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
-	testSuccess := func(followerID, followedID int64) {
-		assert.NoError(t, user_model.FollowUser(followerID, followedID))
-		unittest.AssertExistsAndLoadBean(t, &user_model.Follow{UserID: followerID, FollowID: followedID})
+	testSuccess := func(follower, followed *user_model.User) {
+		assert.NoError(t, user_model.FollowUser(t.Context(), follower, followed))
+		unittest.AssertExistsAndLoadBean(t, &user_model.Follow{UserID: follower.ID, FollowID: followed.ID})
 	}
-	testSuccess(4, 2)
-	testSuccess(5, 2)
 
-	assert.NoError(t, user_model.FollowUser(2, 2))
+	user2 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+	user4 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 4})
+	user5 := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 5})
+
+	testSuccess(user4, user2)
+	testSuccess(user5, user2)
+
+	assert.NoError(t, user_model.FollowUser(t.Context(), user2, user2))
 
 	unittest.CheckConsistencyFor(t, &user_model.User{})
 }
@@ -463,7 +501,7 @@ func TestUnfollowUser(t *testing.T) {
 	assert.NoError(t, unittest.PrepareTestDatabase())
 
 	testSuccess := func(followerID, followedID int64) {
-		assert.NoError(t, user_model.UnfollowUser(followerID, followedID))
+		assert.NoError(t, user_model.UnfollowUser(t.Context(), followerID, followedID))
 		unittest.AssertNotExistsBean(t, &user_model.Follow{UserID: followerID, FollowID: followedID})
 	}
 	testSuccess(4, 2)
@@ -490,7 +528,7 @@ func TestIsUserVisibleToViewer(t *testing.T) {
 			}
 			return u.Name
 		}
-		assert.Equal(t, expected, user_model.IsUserVisibleToViewer(db.DefaultContext, u, viewer), "user %v should be visible to viewer %v: %v", name(u), name(viewer), expected)
+		assert.Equal(t, expected, user_model.IsUserVisibleToViewer(t.Context(), u, viewer), "user %v should be visible to viewer %v: %v", name(u), name(viewer), expected)
 	}
 
 	// admin viewer
@@ -527,19 +565,146 @@ func TestIsUserVisibleToViewer(t *testing.T) {
 }
 
 func Test_ValidateUser(t *testing.T) {
-	oldSetting := setting.Service.AllowedUserVisibilityModesSlice
-	defer func() {
-		setting.Service.AllowedUserVisibilityModesSlice = oldSetting
-	}()
-	setting.Service.AllowedUserVisibilityModesSlice = []bool{true, false, true}
+	defer test.MockVariableValue(&setting.Service.AllowedUserVisibilityModesSlice, []bool{true, false, true})()
+
 	kases := map[*user_model.User]bool{
-		{ID: 1, Visibility: structs.VisibleTypePublic}:                            true,
-		{ID: 2, Visibility: structs.VisibleTypeLimited}:                           false,
-		{ID: 2, Visibility: structs.VisibleTypeLimited, Email: "invalid"}:         false,
-		{ID: 2, Visibility: structs.VisibleTypePrivate, Email: "valid@valid.com"}: true,
+		{ID: 1, Visibility: structs.VisibleTypePublic}:  true,
+		{ID: 2, Visibility: structs.VisibleTypeLimited}: false,
+		{ID: 2, Visibility: structs.VisibleTypePrivate}: true,
 	}
 	for kase, expected := range kases {
-		err := user_model.ValidateUser(kase)
-		assert.EqualValues(t, expected, err == nil, fmt.Sprintf("case: %+v", kase))
+		assert.Equal(t, expected, nil == user_model.ValidateUser(kase), "case: %+v", kase)
 	}
+}
+
+func Test_NormalizeUserFromEmail(t *testing.T) {
+	testCases := []struct {
+		Input             string
+		Expected          string
+		IsNormalizedValid bool
+	}{
+		{"name@example.com", "name", true},
+		{"test'`´name", "testname", true},
+		{"Sinéad.O'Connor", "Sinead.OConnor", true},
+		{"Æsir", "AEsir", true},
+		{"éé", "ee", true}, // \u00e9\u0065\u0301
+		{"Awareness Hub", "Awareness-Hub", true},
+		{"double__underscore", "double__underscore", false}, // We should consider squashing double non-alpha characters
+		{".bad.", ".bad.", false},
+		{"new😀user", "new😀user", false}, // No plans to support
+		{`"quoted"`, `"quoted"`, false}, // No plans to support
+	}
+	for _, testCase := range testCases {
+		normalizedName, err := user_model.NormalizeUserName(testCase.Input)
+		assert.NoError(t, err)
+		assert.Equal(t, testCase.Expected, normalizedName)
+		if testCase.IsNormalizedValid {
+			assert.NoError(t, user_model.IsUsableUsername(normalizedName))
+		} else {
+			assert.Error(t, user_model.IsUsableUsername(normalizedName))
+		}
+	}
+}
+
+func TestEmailTo(t *testing.T) {
+	testCases := []struct {
+		fullName string
+		mail     string
+		result   string
+	}{
+		{"Awareness Hub", "awareness@hub.net", "Awareness Hub <awareness@hub.net>"},
+		{"name@example.com", "name@example.com", "name@example.com"},
+		{"Hi Its <Mee>", "ee@mail.box", "Hi Its Mee <ee@mail.box>"},
+		{"Sinéad.O'Connor", "sinead.oconnor@gmail.com", "=?utf-8?q?Sin=C3=A9ad.O'Connor?= <sinead.oconnor@gmail.com>"},
+		{"Æsir", "aesir@gmx.de", "=?utf-8?q?=C3=86sir?= <aesir@gmx.de>"},
+		{"new😀user", "new.user@alo.com", "=?utf-8?q?new=F0=9F=98=80user?= <new.user@alo.com>"},
+		{`"quoted"`, "quoted@test.com", "quoted <quoted@test.com>"},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.result, func(t *testing.T) {
+			testUser := &user_model.User{FullName: testCase.fullName, Email: testCase.mail}
+			assert.Equal(t, testCase.result, testUser.EmailTo())
+		})
+	}
+}
+
+func TestDisabledUserFeatures(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	testValues := container.SetOf(setting.UserFeatureDeletion,
+		setting.UserFeatureManageSSHKeys,
+		setting.UserFeatureManageGPGKeys)
+	defer test.MockVariableValue(&setting.Admin.ExternalUserDisableFeatures, testValues)()
+
+	user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 1})
+
+	assert.Empty(t, setting.Admin.UserDisabledFeatures.Values())
+
+	// no features should be disabled with a plain login type
+	assert.LessOrEqual(t, user.LoginType, auth.Plain)
+	assert.Empty(t, user_model.DisabledFeaturesWithLoginType(user).Values())
+	for _, f := range testValues.Values() {
+		assert.False(t, user_model.IsFeatureDisabledWithLoginType(user, f))
+	}
+
+	// check disabled features with external login type
+	user.LoginType = auth.OAuth2
+
+	// all features should be disabled
+	assert.NotEmpty(t, user_model.DisabledFeaturesWithLoginType(user).Values())
+	for _, f := range testValues.Values() {
+		assert.True(t, user_model.IsFeatureDisabledWithLoginType(user, f))
+	}
+}
+
+func TestGetInactiveUsers(t *testing.T) {
+	assert.NoError(t, unittest.PrepareTestDatabase())
+
+	// all inactive users
+	// user1's createdunix is 1730468968
+	users, err := user_model.GetInactiveUsers(t.Context(), 0)
+	assert.NoError(t, err)
+	assert.Len(t, users, 1)
+	interval := time.Now().Unix() - 1730468968 + 3600*24
+	users, err = user_model.GetInactiveUsers(t.Context(), time.Duration(interval*int64(time.Second)))
+	assert.NoError(t, err)
+	assert.Empty(t, users)
+}
+
+func TestCanCreateRepo(t *testing.T) {
+	defer test.MockVariableValue(&setting.Repository.MaxCreationLimit)()
+	const noLimit = -1
+	doerActions := user_model.NewActionsUser()
+	doerNormal := &user_model.User{ID: 2}
+	doerAdmin := &user_model.User{ID: 1, IsAdmin: true}
+	t.Run("NoGlobalLimit", func(t *testing.T) {
+		setting.Repository.MaxCreationLimit = noLimit
+
+		assert.False(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 0}))
+		assert.True(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 100}))
+		assert.True(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: noLimit}))
+
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 0}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 100}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: noLimit}))
+		assert.False(t, doerActions.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: noLimit}))
+		assert.False(t, doerAdmin.CanCreateRepoIn(doerActions))
+	})
+
+	t.Run("GlobalLimit50", func(t *testing.T) {
+		setting.Repository.MaxCreationLimit = 50
+
+		assert.True(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: noLimit}))
+		assert.False(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 60, MaxRepoCreation: noLimit})) // limited by global limit
+		assert.False(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 0}))
+		assert.True(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 100}))
+		assert.True(t, doerNormal.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 60, MaxRepoCreation: 100}))
+
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: noLimit}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 60, MaxRepoCreation: noLimit}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 0}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 10, MaxRepoCreation: 100}))
+		assert.True(t, doerAdmin.CanCreateRepoIn(&user_model.User{ID: 2, NumRepos: 60, MaxRepoCreation: 100}))
+	})
 }

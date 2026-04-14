@@ -5,88 +5,39 @@ package cache
 
 import (
 	"context"
-	"sync"
-
-	"code.gitea.io/gitea/modules/log"
+	"time"
 )
 
-// cacheContext is a context that can be used to cache data in a request level context
-// This is useful for caching data that is expensive to calculate and is likely to be
-// used multiple times in a request.
-type cacheContext struct {
-	ctx  context.Context
-	data map[any]map[any]any
-	lock sync.RWMutex
-}
+type cacheContextKeyType struct{}
 
-func (cc *cacheContext) Get(tp, key any) any {
-	cc.lock.RLock()
-	defer cc.lock.RUnlock()
-	if cc.data[tp] == nil {
-		return nil
-	}
-	return cc.data[tp][key]
-}
+var cacheContextKey = cacheContextKeyType{}
 
-func (cc *cacheContext) Put(tp, key, value any) {
-	cc.lock.Lock()
-	defer cc.lock.Unlock()
-	if cc.data[tp] == nil {
-		cc.data[tp] = make(map[any]any)
-	}
-	cc.data[tp][key] = value
-}
-
-func (cc *cacheContext) Delete(tp, key any) {
-	cc.lock.Lock()
-	defer cc.lock.Unlock()
-	if cc.data[tp] == nil {
-		return
-	}
-	delete(cc.data[tp], key)
-}
-
-var cacheContextKey = struct{}{}
+// contextCacheLifetime is the max lifetime of context cache.
+// Since context cache is used to cache data in a request level context, 5 minutes is enough.
+// If a context cache is used more than 5 minutes, it's probably abused.
+const contextCacheLifetime = 5 * time.Minute
 
 func WithCacheContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, cacheContextKey, &cacheContext{
-		ctx:  ctx,
-		data: make(map[any]map[any]any),
-	})
+	if c := GetContextCache(ctx); c != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, cacheContextKey, NewEphemeralCache(contextCacheLifetime))
 }
 
-func GetContextData(ctx context.Context, tp, key any) any {
-	if c, ok := ctx.Value(cacheContextKey).(*cacheContext); ok {
-		return c.Get(tp, key)
-	}
-	log.Warn("cannot get cache context when getting data: %v", ctx)
-	return nil
-}
-
-func SetContextData(ctx context.Context, tp, key, value any) {
-	if c, ok := ctx.Value(cacheContextKey).(*cacheContext); ok {
-		c.Put(tp, key, value)
-		return
-	}
-	log.Warn("cannot get cache context when setting data: %v", ctx)
-}
-
-func RemoveContextData(ctx context.Context, tp, key any) {
-	if c, ok := ctx.Value(cacheContextKey).(*cacheContext); ok {
-		c.Delete(tp, key)
-	}
+func GetContextCache(ctx context.Context) *EphemeralCache {
+	c, _ := ctx.Value(cacheContextKey).(*EphemeralCache)
+	return c
 }
 
 // GetWithContextCache returns the cache value of the given key in the given context.
-func GetWithContextCache[T any](ctx context.Context, cacheGroupKey string, cacheTargetID any, f func() (T, error)) (T, error) {
-	v := GetContextData(ctx, cacheGroupKey, cacheTargetID)
-	if vv, ok := v.(T); ok {
-		return vv, nil
+// FIXME: in some cases, the "context cache" should not be used, because it has uncontrollable behaviors
+// For example, these calls:
+// * GetWithContextCache(TargetID) -> OtherCodeCreateModel(TargetID) -> GetWithContextCache(TargetID)
+// Will cause the second call is not able to get the correct created target.
+// UNLESS it is certain that the target won't be changed during the request, DO NOT use it.
+func GetWithContextCache[T, K any](ctx context.Context, groupKey string, targetKey K, f func(context.Context, K) (T, error)) (T, error) {
+	if c := GetContextCache(ctx); c != nil {
+		return GetWithEphemeralCache(ctx, c, groupKey, targetKey, f)
 	}
-	t, err := f()
-	if err != nil {
-		return t, err
-	}
-	SetContextData(ctx, cacheGroupKey, cacheTargetID, t)
-	return t, nil
+	return f(ctx, targetKey)
 }

@@ -20,7 +20,7 @@ var manager *Manager
 // Manager is the nosql connection manager
 type Manager struct {
 	ctx      context.Context
-	finished context.CancelFunc
+	finished process.FinishedFunc
 	mutex    sync.Mutex
 
 	RedisConnections   map[string]*redisClientHolder
@@ -71,7 +71,7 @@ func valToTimeDuration(vs []string) (result time.Duration) {
 			result = time.Duration(val)
 		}
 		if err == nil {
-			return
+			return result
 		}
 	}
 	return result
